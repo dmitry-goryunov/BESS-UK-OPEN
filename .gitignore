@@ -10,3 +10,5 @@ __pycache__/
 venv/
 
 *.log
+
+data/processed/sim_bundle*.pkl

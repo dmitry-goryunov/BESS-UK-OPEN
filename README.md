@@ -23,3 +23,18 @@ streamlit run streamlit_app.py
 ```
 
 The app reads the parquet and JSON files in `data/raw` and `data/processed`.
+
+## Generate Phase 3 Bundle
+
+Phase 4 can run without rerunning Phases 1-3 if `data/processed/sim_bundle.pkl`
+exists. Generate it with:
+
+```bash
+python scripts/generate_sim_bundle.py --paths 1000 --steps 17520
+```
+
+For a quick development bundle:
+
+```bash
+python scripts/generate_sim_bundle.py --paths 200 --steps 240
+```
