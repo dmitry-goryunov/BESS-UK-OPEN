@@ -224,6 +224,24 @@ class LSMCSolver:
         # EFA block lookup (0..5) given half-hour index 0..47
         self._efa = np.array([hh // 8 for hh in range(48)], dtype=np.int32)
 
+        # Pre-compute next-SoC table for all (j, k, m) combinations.
+        # Shape (n_soc, n_soh, M).  Used in forward() without a Python loop.
+        M = len(self.modes)
+        E_next_jkm = np.zeros((self.n_soc, self.n_soh, M), dtype=np.float32)
+        for j, E_j in enumerate(self.soc_grid):
+            for k_idx, soh_k in enumerate(self.soh_nodes):
+                E_min_k = self.E_min_fr * self.E_name
+                E_max_k = self.E_max_fr * self.E_name * float(soh_k)
+                dE = np.where(
+                    self._net_fracs > 0,
+                    -self._net_fracs * self.P_bar / self.eta_d * self.dt_h,
+                    -self._net_fracs * self.P_bar * self.eta_c * self.dt_h,
+                )
+                E_next_jkm[j, k_idx] = np.clip(
+                    float(E_j) + dE, E_min_k, E_max_k,
+                ).astype(np.float32)
+        self._E_next_jkm = E_next_jkm   # (n_soc, n_soh, M)
+
     # ------------------------------------------------------------------
     # Backward induction
     # ------------------------------------------------------------------
@@ -384,31 +402,29 @@ class LSMCSolver:
 
         Returns (N, M) array.
         """
-        N = V_next.shape[2]
-        M = len(E_next_jm)
-        V_interp = np.empty((N, M), dtype=np.float32)
-
-        grid = self.soc_grid   # (J,)
+        grid = self.soc_grid   # (J,) float32
         J    = len(grid)
 
-        for m_idx in range(M):
-            E_target = float(E_next_jm[m_idx])
-            # Find bounding grid indices
-            j_lo = np.searchsorted(grid, E_target, side='right') - 1
-            j_lo = max(0, min(j_lo, J - 2))
-            j_hi = j_lo + 1
+        # Vectorised over all M modes at once
+        j_lo = np.clip(
+            np.searchsorted(grid, E_next_jm, side='right') - 1,
+            0, J - 2,
+        )   # (M,)
+        j_hi = j_lo + 1   # (M,)
 
-            denom = float(grid[j_hi] - grid[j_lo])
-            if denom < 1e-9:
-                alpha = 0.0
-            else:
-                alpha = (E_target - float(grid[j_lo])) / denom
-            alpha = max(0.0, min(1.0, alpha))
+        denom = grid[j_hi] - grid[j_lo]   # (M,) float32
+        alpha = np.where(
+            denom > 1e-9,
+            (E_next_jm - grid[j_lo]) / np.where(denom > 1e-9, denom, 1.0),
+            0.0,
+        )
+        alpha = np.clip(alpha, 0.0, 1.0).astype(np.float32)   # (M,)
 
-            V_interp[:, m_idx] = (
-                (1.0 - alpha) * V_next[j_lo, k_idx, :]
-                + alpha       * V_next[j_hi, k_idx, :]
-            ).astype(np.float32)
+        # V_next[j_lo, k_idx, :] → (M, N); transpose to (N, M)
+        V_interp = (
+            (1.0 - alpha[:, None]) * V_next[j_lo, k_idx, :]
+            + alpha[:, None]       * V_next[j_hi, k_idx, :]
+        ).T.astype(np.float32)   # (N, M)
 
         return V_interp
 
@@ -468,10 +484,10 @@ class LSMCSolver:
         n_hh_per_cycle = self.E_name / (self.P_bar * dt)   # ~400 HH per full cycle
         soh_per_efc    = 0.18 / max(annual_cycles, 1.0)    # SoH lost per EFC
 
-        disc_factors = np.float32(self.disc) ** np.arange(T, dtype=np.float32)
+        disc_factors = np.float64(self.disc) ** np.arange(T, dtype=np.float64)
 
-        # Mode fracs
         net_fracs = self._net_fracs   # (M,)
+        M = len(self.modes)
 
         if self.verbose:
             print(f"LSMC forward:  T={T}, N={N}")
@@ -485,78 +501,92 @@ class LSMCSolver:
             t_hh      = t % 48
             efa_block = int(self._efa[t_hh])
 
-            # For each path, determine the optimal mode
-            # 1. Get SoC grid index for each path via interpolation
+            # 1. SoC grid index (floor) for each path
             j_arr = np.clip(
                 np.searchsorted(self.soc_grid, E_n, side='right') - 1,
                 0, self.n_soc - 2,
-            )
-            k_arr = np.clip(
-                np.searchsorted(self.soh_nodes[::-1], SoH_n[::-1], side='left'),
-                0, self.n_soh - 1,
-            )
+            )   # (N,) ∈ {0, …, J-2}
 
-            # 2. Compute cashflow for all modes (N, M)
+            # 2. SoH grid index (floor) for each path.
+            # soh_nodes is decreasing (e.g. [1.00, 0.90, 0.82]), so reverse for searchsorted.
+            k_arr = np.clip(
+                self.n_soh - np.searchsorted(self.soh_nodes[::-1], SoH_n, side='right'),
+                0, self.n_soh - 1,
+            )   # (N,) ∈ {0, …, K-1}
+
+            # 3. Cashflow matrix — vectorised over all (N, M)
             CF = cashflow_batch(
                 self.modes, P_da, delta, pi_dc, pi_qr,
                 self.P_bar, dt, self.deg_cost, self.vom,
-            )
+            )   # (N, M)
 
-            # 3. Evaluate continuation value for each mode and each path
-            # For efficiency: pick one representative SoC node per path
-            # and use its beta coefficients to evaluate Q
-            # (more exact: interpolate beta between j_arr[n] and j_arr[n]+1)
-            Q = np.full((N, len(self.modes)), -1e9, dtype=np.float32)
+            # 4. Continuation value — fully vectorised, no Python loop over j/k/m.
+            #
+            # Basis decomposition (see BASIS_NAMES):
+            #   features 0-7  (const, P, P^2, P^3, P_id, delta, dc, qr)  — no E
+            #   features 8-10 (E, E^2, E×P)                              — E-dependent
+            #   features 11-13 (sin, cos, efa)                            — no E
+            #
+            # cont[n,m] = phi_base[n] @ b_base[n]        (E-independent part)
+            #           + b[8,n] * E_scaled[n,m]
+            #           + b[9,n] * E_scaled[n,m]^2
+            #           + b[10,n] * P_c[n] * E_scaled[n,m]
 
-            for j in range(self.n_soc - 1):
-                mask_j = (j_arr == j)
-                if not mask_j.any():
-                    continue
-                for k_idx in range(self.n_soh):
-                    mask = mask_j  # simplified: ignore SoH interpolation for speed
-                    if not mask.any():
-                        continue
+            # Build E-independent basis (N, 11) once per time-step
+            P_c   = np.clip(P_da, -100.0, 500.0).astype(np.float32) / 100.0
+            dlt_c = np.clip(delta, -500.0, 500.0).astype(np.float32) / 100.0
+            dc_c  = np.clip(pi_dc, 0.0, 100.0).astype(np.float32)   / 20.0
+            qr_c  = np.clip(pi_qr, 0.0, 100.0).astype(np.float32)   / 20.0
+            sin_h = np.float32(np.sin(2 * np.pi * (t_hh / 2.0) / 24))
+            cos_h = np.float32(np.cos(2 * np.pi * (t_hh / 2.0) / 24))
 
-                    # E next for each mode
-                    SoH_rep  = float(self.soh_nodes[k_idx])
-                    E_min_k  = self.E_min_fr * self.E_name
-                    E_max_k  = self.E_max_fr * self.E_name * SoH_rep
+            phi_base = np.empty((N, 11), dtype=np.float32)
+            phi_base[:, 0]  = 1.0
+            phi_base[:, 1]  = P_c
+            phi_base[:, 2]  = P_c ** 2
+            phi_base[:, 3]  = P_c ** 3
+            phi_base[:, 4]  = 0.0          # P_id spread — placeholder (always 0)
+            phi_base[:, 5]  = dlt_c
+            phi_base[:, 6]  = dc_c
+            phi_base[:, 7]  = qr_c
+            phi_base[:, 8]  = sin_h
+            phi_base[:, 9]  = cos_h
+            phi_base[:, 10] = float(efa_block)
 
-                    E_next_jm = np.clip(
-                        next_soc_grid(
-                            float(self.soc_grid[j]),
-                            net_fracs, self.P_bar,
-                            self.eta_c, self.eta_d, dt,
-                            E_min_k, E_max_k,
-                        ),
-                        E_min_k, E_max_k,
-                    )   # (M,)
+            # Gather beta for each path's (j, k) node: (N, 14)
+            b_n = policy.beta[t, j_arr, k_arr, :]   # (N, 14)
 
-                    # Beta at this node
-                    b = policy.beta[t, j, k_idx, :]   # (14,)
+            # b_base: columns 0-7 and 11-13 of beta → (N, 11)
+            b_base_n = np.concatenate([b_n[:, :8], b_n[:, 11:14]], axis=1)
 
-                    # For each mode, build ψ with E_next (LSML-style approx)
-                    P_id_spr_n = np.zeros(mask.sum(), dtype=np.float32)
-                    for m_idx, E_m in enumerate(E_next_jm):
-                        Phi_m = basis_matrix(
-                            P_da[mask], P_id_spr_n, delta[mask],
-                            pi_dc[mask], pi_qr[mask],
-                            E_m, t_hh, efa_block,
-                        )   # (mask.sum(), 14)
-                        cont = np.clip(Phi_m @ b, -1e8, 1e8).astype(np.float32)
+            # E-independent continuation: (N,)
+            base_cont = (phi_base * b_base_n).sum(axis=1)
 
-                        # Feasibility: clip infeasible modes to -inf
-                        feas = True
-                        E_curr_j = self.soc_grid[j]
-                        if net_fracs[m_idx] > 0 and E_next_jm[m_idx] <= E_min_k + 1e-3:
-                            feas = False
-                        if net_fracs[m_idx] < 0 and E_next_jm[m_idx] >= E_max_k - 1e-3:
-                            feas = False
+            # E-dependent: look up pre-computed next-SoC for each path × mode
+            E_next_nm = self._E_next_jkm[j_arr, k_arr, :]   # (N, M)
+            E_sc_nm   = (E_next_nm / 100.0).astype(np.float32)   # (N, M)
 
-                        if feas:
-                            Q[mask, m_idx] = CF[mask, m_idx] + self.disc * cont
+            cont = np.clip(
+                base_cont[:, None]
+                + b_n[:, 8:9]  * E_sc_nm
+                + b_n[:, 9:10] * E_sc_nm ** 2
+                + (b_n[:, 10] * P_c)[:, None] * E_sc_nm,
+                -1e8, 1e8,
+            ).astype(np.float32)   # (N, M)
 
-            # 4. Choose optimal mode per path
+            # Feasibility mask: (N, M)
+            E_min_const = np.float32(self.E_min_fr * self.E_name)
+            E_max_n_arr = (self.E_max_fr * self.E_name
+                           * self.soh_nodes[k_arr]).astype(np.float32)   # (N,)
+            infeas = (
+                ((net_fracs[None, :] > 0) & (E_next_nm <= E_min_const + 1e-3)) |
+                ((net_fracs[None, :] < 0) & (E_next_nm >= E_max_n_arr[:, None] - 1e-3))
+            )   # (N, M)
+
+            Q = CF + np.float32(self.disc) * cont   # (N, M)
+            Q[infeas] = np.float32(-1e9)
+
+            # 5. Choose optimal mode per path
             m_star = np.argmax(Q, axis=1)   # (N,)
 
             # 5. Apply chosen action

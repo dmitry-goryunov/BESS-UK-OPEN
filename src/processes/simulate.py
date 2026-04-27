@@ -320,95 +320,96 @@ def simulate(
             mu_prod[prod]  = PEAK_PRICE.get(prod, 10.0)
 
     # ------------------------------------------------------------------
-    # Simulation loop
+    # Simulation loop — chunked RNG pre-generation
     # ------------------------------------------------------------------
-    # Draw 6 correlated normals for the joint diffusion; one independent
-    # normal for lam3 (if K > 2); independent normals for DM, DR, QR products
+    # Drawing random numbers one step at a time makes T separate RNG calls.
+    # Pre-generating a chunk of CHUNK steps at once reduces call overhead by
+    # ~CHUNK× and enables a single batched Cholesky matmul per chunk.
+    # Note: chunking changes the RNG interleaving vs. per-step draws, so paths
+    # will differ from the old implementation for the same seed.
     n_joint = 6                           # chi, xi, lam1, lam2, delta, pi_dc
     n_indep_lam = max(0, K - 2)          # lam3, lam4, ...
     n_indep_anc = len(PRODUCTS) - 1       # all products except DC_Low (pi_dc)
-    # Products excluding DC_Low (which is correlated)
     indep_prods = [p for p in PRODUCTS if p != 'DC_Low']
 
-    sqrt_dt_placeholder = np.sqrt(dt)     # not used directly; scaling done above
+    # Constants that were previously recomputed inside the loop
+    mu_d          = float(imb.mu_delta)
+    mu_dc         = mu_prod['DC_Low']
+    lam_j         = float(imb.lambda_jump)
+    p_pos         = float(imb.p_pos)
+    jump_scale_pos = float(imb.jump_scale_pos)
+    jump_scale_neg = float(imb.jump_scale_neg)
 
-    for t in range(T):
-        # --- Draw joint correlated normals (N × 6) ---
-        z_raw  = rng.standard_normal((N, n_joint)).astype(float)
-        z_corr = z_raw @ L.T    # (N, 6) correlated
+    CHUNK = 1024
 
-        # --- Independent normals for lam3+ and non-DC ancillary ---
+    for t_start in range(0, T, CHUNK):
+        t_end = min(t_start + CHUNK, T)
+        c = t_end - t_start
+
+        # Pre-generate correlated joint normals: (c, N, 6) → apply L once
+        z_raw  = rng.standard_normal((c, N, n_joint))
+        z_joint = (z_raw @ L.T).astype(np.float64)   # (c, N, 6)
+
         if n_indep_lam > 0:
-            z_lam_extra = rng.standard_normal((N, n_indep_lam))
+            z_lam_extra_c = rng.standard_normal((c, N, n_indep_lam))
         if n_indep_anc > 0:
-            z_anc_indep = rng.standard_normal((N, n_indep_anc))
+            z_anc_indep_c = rng.standard_normal((c, N, n_indep_anc))
 
-        # === 1. Schwartz-Smith chi and xi ===
-        chi_prev = chi[:, t]
-        xi_prev  = xi[:, t]
+        # Pre-generate jump noise for the whole chunk
+        n_jumps_c    = rng.poisson(lam_j, size=(c, N))
+        jump_signs_c = rng.uniform(size=(c, N)) < p_pos
+        jump_pos_c   = rng.exponential(jump_scale_pos, size=(c, N))
+        jump_neg_c   = rng.exponential(jump_scale_neg, size=(c, N))
+        jump_sizes_c = np.where(jump_signs_c, jump_pos_c, -jump_neg_c)
+        jump_total_c = ((n_jumps_c > 0) * jump_sizes_c)   # (c, N)
 
-        chi[:, t+1] = (exp_kappa * chi_prev
-                       + std_chi * z_corr[:, IDX_CHI]).astype(dtype)
+        for i in range(c):
+            t = t_start + i
+            z_corr = z_joint[i]       # (N, 6) — view, no copy
+            jump_total = jump_total_c[i]   # (N,) — view
 
-        xi[:, t+1]  = (xi_prev
-                       + drift_xi
-                       + std_xi * z_corr[:, IDX_XI]).astype(dtype)
+            # === 1. Schwartz-Smith chi and xi ===
+            chi[:, t+1] = (exp_kappa * chi[:, t]
+                           + std_chi * z_corr[:, IDX_CHI]).astype(dtype)
+            xi[:, t+1]  = (xi[:, t]
+                           + drift_xi
+                           + std_xi * z_corr[:, IDX_XI]).astype(dtype)
 
-        # === 2. HPFC shape factors lambda ===
-        for k in range(K):
-            if k == 0:
-                z_k = z_corr[:, IDX_LAM1]
-            elif k == 1:
-                z_k = z_corr[:, IDX_LAM2]
-            else:
-                z_k = z_lam_extra[:, k - 2]
+            # === 2. HPFC shape factors lambda ===
+            for k in range(K):
+                if k == 0:
+                    z_k = z_corr[:, IDX_LAM1]
+                elif k == 1:
+                    z_k = z_corr[:, IDX_LAM2]
+                else:
+                    z_k = z_lam_extra_c[i, :, k - 2]
+                lam[:, t+1, k] = (exp_alpha[k] * lam[:, t, k]
+                                   + std_lam[k] * z_k).astype(dtype)
 
-            lam[:, t+1, k] = (exp_alpha[k] * lam[:, t, k]
-                               + std_lam[k] * z_k).astype(dtype)
+            # === 3. Imbalance basis (OU diffusion + jumps) ===
+            delta_diff = (exp_theta * (delta_imb[:, t] - mu_d)
+                          + mu_d
+                          + std_delta * z_corr[:, IDX_DELTA])
+            delta_imb[:, t+1] = (delta_diff + jump_total).astype(dtype)
 
-        # === 3. Imbalance basis (OU diffusion + jumps) ===
-        delta_prev = delta_imb[:, t]
-
-        # Diffusion component (mean-reverting toward mu_delta)
-        mu_d  = float(imb.mu_delta)
-        delta_diff = (exp_theta * (delta_prev - mu_d)
-                      + mu_d
-                      + std_delta * z_corr[:, IDX_DELTA])
-
-        # Jump component (compound Poisson, independent of diffusion correlation)
-        lam_j  = float(imb.lambda_jump)
-        n_jumps = rng.poisson(lam_j, size=N)
-        jump_signs  = rng.uniform(size=N) < float(imb.p_pos)
-        jump_sizes  = np.where(
-            jump_signs,
-            rng.exponential(float(imb.jump_scale_pos), size=N),
-            -rng.exponential(float(imb.jump_scale_neg), size=N),
-        )
-        jump_total = (n_jumps > 0) * jump_sizes
-
-        delta_imb[:, t+1] = (delta_diff + jump_total).astype(dtype)
-
-        # === 4. Ancillary clearing prices ===
-        # DC_Low: correlated via z_corr[:, IDX_PIDC]
-        dc_prev  = pi_arr['DC_Low'][:, t]
-        mu_dc    = mu_prod['DC_Low']
-        pi_arr['DC_Low'][:, t+1] = np.maximum(
-            0.0,
-            (phi_hh['DC_Low'] * (dc_prev - mu_dc)
-             + mu_dc
-             + sigma_hh['DC_Low'] * z_corr[:, IDX_PIDC])
-        ).astype(dtype)
-
-        # All other products: independent normals
-        for i, prod in enumerate(indep_prods):
-            pi_prev = pi_arr[prod][:, t]
-            mu_p    = mu_prod[prod]
-            pi_arr[prod][:, t+1] = np.maximum(
+            # === 4. Ancillary clearing prices ===
+            # DC_Low: correlated via z_corr[:, IDX_PIDC]
+            pi_arr['DC_Low'][:, t+1] = np.maximum(
                 0.0,
-                (phi_hh[prod] * (pi_prev - mu_p)
-                 + mu_p
-                 + sigma_hh[prod] * z_anc_indep[:, i])
+                (phi_hh['DC_Low'] * (pi_arr['DC_Low'][:, t] - mu_dc)
+                 + mu_dc
+                 + sigma_hh['DC_Low'] * z_corr[:, IDX_PIDC])
             ).astype(dtype)
+
+            # All other products: independent normals
+            for ii, prod in enumerate(indep_prods):
+                mu_p = mu_prod[prod]
+                pi_arr[prod][:, t+1] = np.maximum(
+                    0.0,
+                    (phi_hh[prod] * (pi_arr[prod][:, t] - mu_p)
+                     + mu_p
+                     + sigma_hh[prod] * z_anc_indep_c[i, :, ii])
+                ).astype(dtype)
 
     # ------------------------------------------------------------------
     # Build log baseload price series

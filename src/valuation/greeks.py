@@ -168,42 +168,6 @@ class BumpAndRevalue:
         return gv
 
 
-# ------------------------------------------------------------------
-# VaR / CVaR
-# ------------------------------------------------------------------
-
-def compute_var_cvar(
-    pv_paths: np.ndarray,
-    alpha:    float = 0.95,
-) -> Dict[str, float]:
-    """
-    Compute VaR and CVaR from the LSMC path distribution.
-
-    Parameters
-    ----------
-    pv_paths : (n_paths,) array of discounted PV per path
-    alpha    : confidence level (e.g. 0.95 for 95% CVaR)
-
-    Returns
-    -------
-    dict with 'VaR', 'CVaR', 'mean', 'std', 'p10', 'p50', 'p90'
-    """
-    losses = -pv_paths   # loss = negative PV
-
-    var_q  = np.quantile(losses, alpha)
-    cvar   = losses[losses >= var_q].mean()
-
-    return {
-        "VaR":  float(var_q),
-        "CVaR": float(cvar),
-        "mean": float(pv_paths.mean()),
-        "std":  float(pv_paths.std()),
-        "p10":  float(np.percentile(pv_paths, 10)),
-        "p50":  float(np.percentile(pv_paths, 50)),
-        "p90":  float(np.percentile(pv_paths, 90)),
-    }
-
-
 class GreekEngine:
     """
     Lightweight compatibility engine for the Phase 5 notebook.
