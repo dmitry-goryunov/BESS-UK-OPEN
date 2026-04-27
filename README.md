@@ -13,3 +13,13 @@ Main notebook:
 
 - `notebooks/bess_valuation_full.ipynb`
 
+## Streamlit App
+
+Run the cached-output dashboard locally:
+
+```bash
+pip install -r requirements.txt
+streamlit run streamlit_app.py
+```
+
+The app reads the parquet and JSON files in `data/raw` and `data/processed`.
