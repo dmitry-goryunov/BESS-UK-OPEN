@@ -1,0 +1,28 @@
+{
+  "dual_bound": {
+    "v_lsmc_gbp": 13727677.0,
+    "v_dual_gbp": 14149054.809875559,
+    "v_dual_std": 120765.85359665741,
+    "v_ri_gbp": 995157.0,
+    "gap_abs_gbp": 421377.80987555906,
+    "gap_pct": 0.030695492753475995,
+    "n_paths": 200,
+    "dual_ok": true,
+    "threshold": 0.05
+  },
+  "backtest": {
+    "n_periods": 30,
+    "total_delta_mtm_gbp": -692270.8489488981,
+    "total_theta_gbp": -87881.41883946864,
+    "total_delta_explain_gbp": -362407.6531665917,
+    "total_exec_surprise_gbp": -38730.56985928778,
+    "total_deg_surprise_gbp": -209266.46013430116,
+    "total_residual_gbp": 6015.253050751153,
+    "residual_pct_total": 0.008689148720815866,
+    "mean_daily_residual_pct": 0.023043169448862588,
+    "p95_daily_residual_pct": 0.047567833356330386,
+    "pass_residual_target": true,
+    "target_residual_pct": 0.05
+  },
+  "soh_base_yr15": 0.6797031003911554
+}

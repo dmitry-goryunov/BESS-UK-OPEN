@@ -1,0 +1,172 @@
+{
+  "mtm": {
+    "merchant": 1178.0235,
+    "toll": 0.0,
+    "floor_contracted": 0.0,
+    "cm": 1050.9762279041352,
+    "floor_optionality": 15021.182,
+    "optimiser_fee": -147.82233333333335,
+    "opex_fixed": -5179.866126795196,
+    "augmentation": -12526.609726733197,
+    "total_mean": -1655.0928333333334,
+    "total_std": 506.2275833333333,
+    "total_p5": -2132.1976666666665,
+    "total_p95": -592.2592083333333,
+    "annuity_factor": 8.109083895409624,
+    "alpha_merchant": 1.0,
+    "life_years": 15
+  },
+  "risk_95": {
+    "alpha": 0.95,
+    "mean_gbp": -2482639.27,
+    "std_gbp": 759341.392975628,
+    "var_gbp": 3198296.4,
+    "cvar_gbp": 3262863.8,
+    "p5_gbp": -3198296.4,
+    "p50_gbp": -2762759.0,
+    "p95_gbp": -888388.8000000002
+  },
+  "risk_99": {
+    "alpha": 0.99,
+    "mean_gbp": -2482639.27,
+    "std_gbp": 759341.392975628,
+    "var_gbp": 3301471.98,
+    "cvar_gbp": 3325264.0,
+    "p5_gbp": -3198296.4,
+    "p50_gbp": -2762759.0,
+    "p95_gbp": -888388.8000000002
+  },
+  "greeks": {
+    "delta_baseload": {
+      "name": "delta_baseload",
+      "base_mtm": -2482639.25,
+      "bumped_mtm": -2544705.2312499997,
+      "bump_size": 1.0,
+      "bump_unit": "GBP/MWh",
+      "greek": -62065.98124999972,
+      "greek_pct": 2.5,
+      "tier": "analytical",
+      "note": ""
+    },
+    "delta_dc": {
+      "name": "delta_dc",
+      "base_mtm": -2482639.25,
+      "bumped_mtm": -2502500.364,
+      "bump_size": 1.0,
+      "bump_unit": "GBP/MW/h",
+      "greek": -19861.11400000006,
+      "greek_pct": 0.8,
+      "tier": "analytical",
+      "note": ""
+    },
+    "delta_qr": {
+      "name": "delta_qr",
+      "base_mtm": -2482639.25,
+      "bumped_mtm": -2492569.807,
+      "bump_size": 1.0,
+      "bump_unit": "GBP/MW/h",
+      "greek": -9930.55700000003,
+      "greek_pct": 0.4,
+      "tier": "analytical",
+      "note": ""
+    },
+    "delta_imb_drift": {
+      "name": "delta_imb_drift",
+      "base_mtm": -2482639.25,
+      "bumped_mtm": -2497535.0855,
+      "bump_size": 5.0,
+      "bump_unit": "GBP/MWh",
+      "greek": -2979.1671000000088,
+      "greek_pct": 0.6,
+      "tier": "analytical",
+      "note": ""
+    },
+    "rho": {
+      "name": "rho",
+      "base_mtm": -2482639.25,
+      "bumped_mtm": -2452847.579,
+      "bump_size": 50.0,
+      "bump_unit": "bps",
+      "greek": 595.8334200000018,
+      "greek_pct": -1.2,
+      "tier": "analytical",
+      "note": ""
+    },
+    "delta_availability": {
+      "name": "delta_availability",
+      "base_mtm": -2482639.25,
+      "bumped_mtm": -2457812.8575,
+      "bump_size": 0.02,
+      "bump_unit": "fraction",
+      "greek": 1241319.6250000037,
+      "greek_pct": -1.0,
+      "tier": "analytical",
+      "note": ""
+    },
+    "vega_da": {
+      "name": "vega_da",
+      "base_mtm": -2482639.25,
+      "bumped_mtm": -2557118.4275,
+      "bump_size": 0.1,
+      "bump_unit": "fraction",
+      "greek": -744791.7750000022,
+      "greek_pct": 3.0,
+      "tier": "re-solve",
+      "note": ""
+    },
+    "delta_rte": {
+      "name": "delta_rte",
+      "base_mtm": -2482639.25,
+      "bumped_mtm": -2445399.66125,
+      "bump_size": -0.02,
+      "bump_unit": "fraction",
+      "greek": -1861979.4375000056,
+      "greek_pct": -1.5,
+      "tier": "re-solve",
+      "note": ""
+    },
+    "delta_soh": {
+      "name": "delta_soh",
+      "base_mtm": -2482639.25,
+      "bumped_mtm": -2507465.6425,
+      "bump_size": 0.01,
+      "bump_unit": "fraction",
+      "greek": -2482639.2500000075,
+      "greek_pct": 1.0,
+      "tier": "re-solve",
+      "note": ""
+    }
+  },
+  "scenarios": {
+    "High price": {
+      "name": "High price",
+      "stress_mtm_mean": -2855035.1374999997,
+      "delta_gbp": -372395.8875,
+      "delta_pct": 15.0
+    },
+    "Low price": {
+      "name": "Low price",
+      "stress_mtm_mean": -2110243.3625,
+      "delta_gbp": 372395.8875,
+      "delta_pct": -15.0
+    },
+    "High volatility": {
+      "name": "High volatility",
+      "stress_mtm_mean": -2681250.39,
+      "delta_gbp": -198611.14,
+      "delta_pct": 8.0
+    },
+    "Low ancillary": {
+      "name": "Low ancillary",
+      "stress_mtm_mean": -2308854.5025,
+      "delta_gbp": 173784.74750000003,
+      "delta_pct": -7.000000000000001
+    },
+    "High discount": {
+      "name": "High discount",
+      "stress_mtm_mean": -2358507.2875,
+      "delta_gbp": 124131.96250000001,
+      "delta_pct": -5.0
+    }
+  }
+}
