@@ -32,6 +32,9 @@ Longstaff & Schwartz (2001) Rev. Fin. Studies 14(1)
 
 from __future__ import annotations
 
+import os
+from concurrent.futures import ThreadPoolExecutor, as_completed
+
 import numpy as np
 from dataclasses import dataclass, field
 from typing import Dict, List, Optional, Tuple
@@ -606,6 +609,88 @@ class LSMCSolver:
             efc_total      = float(
                 np.mean(np.abs(act_store).astype(float))
             ),  # approx
+        )
+
+    def forward_parallel(
+        self,
+        bundle: PathBundle,
+        policy: Policy,
+        E_init_frac: float = 0.5,
+        SoH_init: float = 1.0,
+        annual_cycles: float = 520.0,
+        max_workers: Optional[int] = None,
+    ) -> ValuationResult:
+        """
+        Forward simulation split across path chunks.
+
+        The policy is fixed, so paths are independent. Threads are used because
+        they are notebook-friendly on Windows and avoid pickling large policies.
+        """
+        N = bundle.n_paths
+        if max_workers is None:
+            max_workers = max(1, min(N, (os.cpu_count() or 2) - 1))
+        max_workers = max(1, min(max_workers, N))
+
+        chunks = np.array_split(np.arange(N), max_workers)
+        chunks = [chunk for chunk in chunks if len(chunk)]
+
+        old_verbose = self.verbose
+        self.verbose = False
+
+        def run_chunk(pos: int, idx: np.ndarray) -> tuple:
+            sub = PathBundle(
+                chi=bundle.chi[idx],
+                xi=bundle.xi[idx],
+                ln_P_base=bundle.ln_P_base[idx],
+                lam=bundle.lam[idx],
+                delta_imb=bundle.delta_imb[idx],
+                pi={k: v[idx] for k, v in bundle.pi.items()},
+                dt=bundle.dt,
+                n_paths=len(idx),
+                n_steps=bundle.n_steps,
+            )
+            return pos, self.forward(
+                sub,
+                policy,
+                E_init_frac=E_init_frac,
+                SoH_init=SoH_init,
+                annual_cycles=annual_cycles,
+            )
+
+        results = [None] * len(chunks)
+        try:
+            with ThreadPoolExecutor(max_workers=max_workers) as executor:
+                futures = [executor.submit(run_chunk, i, chunk) for i, chunk in enumerate(chunks)]
+                done = 0
+                for future in as_completed(futures):
+                    pos, res = future.result()
+                    results[pos] = res
+                    done += 1
+                    if old_verbose:
+                        print(f"  Forward chunks complete {done}/{len(chunks)} ...", end="\r")
+        finally:
+            self.verbose = old_verbose
+
+        if old_verbose:
+            print()
+
+        pv_paths = np.concatenate([r.pv_paths for r in results])
+        cashflow_paths = np.concatenate([r.cashflow_paths for r in results], axis=0)
+        soc_paths = np.concatenate([r.soc_paths for r in results], axis=0)
+        soh_paths = np.concatenate([r.soh_paths for r in results], axis=0)
+        action_paths = np.concatenate([r.action_paths for r in results], axis=0)
+
+        return ValuationResult(
+            pv_paths=pv_paths,
+            cashflow_paths=cashflow_paths,
+            soc_paths=soc_paths,
+            soh_paths=soh_paths,
+            action_paths=action_paths,
+            mtm_mean=float(np.mean(pv_paths)),
+            mtm_std=float(np.std(pv_paths)),
+            mtm_p5=float(np.percentile(pv_paths, 5)),
+            mtm_p95=float(np.percentile(pv_paths, 95)),
+            efc_total=float(np.mean(np.abs(action_paths).astype(float))),
         )
 
 
