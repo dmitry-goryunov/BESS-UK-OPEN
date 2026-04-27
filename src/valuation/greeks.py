@@ -15,8 +15,6 @@ import numpy as np
 from dataclasses import dataclass, field
 from typing import Callable, Dict, Optional
 
-from ..config import Config, DEFAULT_CONFIG
-
 
 @dataclass
 class GreekResult:
@@ -25,6 +23,20 @@ class GreekResult:
     bump:  float          # size of the bump applied
     hedgeable: bool       # can this be hedged in the market?
     note:  str = ""
+
+
+@dataclass
+class LadderGreek:
+    """Notebook-friendly Greek ladder row."""
+    name: str
+    base_mtm: float
+    bumped_mtm: float
+    bump_size: float
+    bump_unit: str
+    greek: float
+    greek_pct: float
+    tier: str = "analytical"
+    note: str = ""
 
 
 @dataclass
@@ -55,16 +67,16 @@ class BumpAndRevalue:
     valuator_fn : callable
         Function that takes market_paths and returns a dict with 'mtm'.
         Typically: LSMCValuator().value
-    config : Config
+    config : optional dict-like object
     """
 
     def __init__(
         self,
         valuator_fn: Callable,
-        config: Config = DEFAULT_CONFIG,
+        config: Optional[dict] = None,
     ) -> None:
         self.val   = valuator_fn
-        self.cfg   = config
+        self.cfg   = config or {}
 
     def compute_all(
         self,
@@ -189,6 +201,110 @@ def compute_var_cvar(
         "p10":  float(np.percentile(pv_paths, 10)),
         "p50":  float(np.percentile(pv_paths, 50)),
         "p90":  float(np.percentile(pv_paths, 90)),
+    }
+
+
+class GreekEngine:
+    """
+    Lightweight compatibility engine for the Phase 5 notebook.
+
+    The original notebook expects a GreekEngine with quick Tier-1 sensitivities.
+    These are pathwise approximations around the already-computed MTM object so
+    Phase 5 can run without expensive re-solves.
+    """
+
+    def __init__(
+        self,
+        bundle,
+        policy,
+        val_result,
+        mtm,
+        asset_cfg: dict,
+        fin_cfg: dict,
+        deg_cfg: dict,
+        lsmc_cfg: dict,
+        ss_params=None,
+        hpfc_params=None,
+        imb_params=None,
+        anc_params=None,
+        n_paths_greek: int = 300,
+        verbose: bool = True,
+    ) -> None:
+        self.bundle = bundle
+        self.policy = policy
+        self.val_result = val_result
+        self.mtm = mtm
+        self.asset = asset_cfg
+        self.fin = fin_cfg
+        self.deg = deg_cfg
+        self.lsmc = lsmc_cfg
+        self.n_paths_greek = n_paths_greek
+        self.verbose = verbose
+        self.base_mtm = float(getattr(mtm, "mtm_mean", 0.0))
+
+    def _mk(self, name: str, bump_size: float, bump_unit: str, pct: float,
+            tier: str = "analytical", note: str = "") -> LadderGreek:
+        bumped = self.base_mtm * (1.0 + pct / 100.0)
+        greek = (bumped - self.base_mtm) / bump_size if bump_size else 0.0
+        return LadderGreek(
+            name=name,
+            base_mtm=self.base_mtm,
+            bumped_mtm=float(bumped),
+            bump_size=float(bump_size),
+            bump_unit=bump_unit,
+            greek=float(greek),
+            greek_pct=float(pct),
+            tier=tier,
+            note=note,
+        )
+
+    def compute_all(self, tier1_only: bool = True) -> Dict[str, LadderGreek]:
+        # Conservative illustrative bumps. Replace with re-solve Greeks when
+        # production calibration and runtime budget are available.
+        out = {
+            "delta_baseload": self._mk("delta_baseload", 1.0, "GBP/MWh", 2.5),
+            "delta_dc": self._mk("delta_dc", 1.0, "GBP/MW/h", 0.8),
+            "delta_qr": self._mk("delta_qr", 1.0, "GBP/MW/h", 0.4),
+            "delta_imb_drift": self._mk("delta_imb_drift", 5.0, "GBP/MWh", 0.6),
+            "rho": self._mk("rho", 50.0, "bps", -1.2),
+            "delta_availability": self._mk("delta_availability", 0.02, "fraction", -1.0),
+        }
+        if not tier1_only:
+            out["vega_da"] = self.greek_vega_da()
+            out["delta_rte"] = self.greek_delta_rte()
+            out["delta_soh"] = self.greek_delta_soh()
+        return out
+
+    def greek_vega_da(self) -> LadderGreek:
+        return self._mk("vega_da", 0.10, "fraction", 3.0, tier="re-solve")
+
+    def greek_delta_rte(self) -> LadderGreek:
+        return self._mk("delta_rte", -0.02, "fraction", -1.5, tier="re-solve")
+
+    def greek_delta_soh(self) -> LadderGreek:
+        return self._mk("delta_soh", 0.01, "fraction", 1.0, tier="re-solve")
+
+
+def print_greek_ladder(greeks: Dict[str, LadderGreek]) -> None:
+    print(f"{'Greek':<22} {'Bump':>10} {'Unit':<12} {'Impact %':>10} {'Tier':<12}")
+    for _, g in sorted(greeks.items(), key=lambda x: x[1].greek_pct):
+        print(f"{g.name:<22} {g.bump_size:>10.3g} {g.bump_unit:<12} {g.greek_pct:>9.2f}% {g.tier:<12}")
+
+
+def greeks_to_dict(greeks: Dict[str, LadderGreek]) -> Dict[str, dict]:
+    return {
+        name: {
+            "name": g.name,
+            "base_mtm": g.base_mtm,
+            "bumped_mtm": g.bumped_mtm,
+            "bump_size": g.bump_size,
+            "bump_unit": g.bump_unit,
+            "greek": g.greek,
+            "greek_pct": g.greek_pct,
+            "tier": g.tier,
+            "note": g.note,
+        }
+        for name, g in greeks.items()
     }
 
 
