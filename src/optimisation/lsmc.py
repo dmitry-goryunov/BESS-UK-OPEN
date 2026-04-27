@@ -73,23 +73,32 @@ def basis_matrix(
     """
     Build (N_paths, 14) basis matrix for one SoC grid node.
 
-    P_da and all price arrays have already been scaled / clipped.
+    Inputs are clipped and scaled here so the polynomial regression remains
+    numerically stable. Without this, P_da^3 and E^2 can dominate the normal
+    equations and create explosive continuation values.
     """
     N  = len(P_da)
     h  = t_hh / 2.0   # convert to hour-of-day
 
+    P = np.clip(P_da, -100.0, 500.0).astype(np.float32) / 100.0
+    P_id = np.clip(P_id_spr, -200.0, 200.0).astype(np.float32) / 100.0
+    dlt = np.clip(delta, -500.0, 500.0).astype(np.float32) / 100.0
+    dc = np.clip(pi_dc, 0.0, 100.0).astype(np.float32) / 20.0
+    qr = np.clip(pi_qr, 0.0, 100.0).astype(np.float32) / 20.0
+    E_scaled = np.float32(E / 100.0)
+
     Phi = np.empty((N, N_BASIS), dtype=np.float32)
     Phi[:, 0]  = 1.0
-    Phi[:, 1]  = P_da
-    Phi[:, 2]  = P_da ** 2
-    Phi[:, 3]  = P_da ** 3
-    Phi[:, 4]  = P_id_spr
-    Phi[:, 5]  = delta
-    Phi[:, 6]  = pi_dc
-    Phi[:, 7]  = pi_qr
-    Phi[:, 8]  = E
-    Phi[:, 9]  = E ** 2
-    Phi[:, 10] = E * P_da
+    Phi[:, 1]  = P
+    Phi[:, 2]  = P ** 2
+    Phi[:, 3]  = P ** 3
+    Phi[:, 4]  = P_id
+    Phi[:, 5]  = dlt
+    Phi[:, 6]  = dc
+    Phi[:, 7]  = qr
+    Phi[:, 8]  = E_scaled
+    Phi[:, 9]  = E_scaled ** 2
+    Phi[:, 10] = E_scaled * P
     Phi[:, 11] = np.float32(np.sin(2 * np.pi * h / 24))
     Phi[:, 12] = np.float32(np.cos(2 * np.pi * h / 24))
     Phi[:, 13] = float(efa_block)
@@ -251,11 +260,12 @@ class LSMCSolver:
         # Updated at each backward step and then used at t-1.
         V_next = np.zeros((J, K, N), dtype=np.float32)
 
-        # Pre-extract price arrays from bundle (float32, shape (N, T+1))
-        P_da_all   = np.exp(bundle.ln_P_base).astype(np.float32)   # (N, T+1)
-        delta_all  = bundle.delta_imb.astype(np.float32)            # (N, T+1)
-        pi_dc_all  = bundle.pi['DC_Low'].astype(np.float32)         # (N, T+1)
-        pi_qr_all  = bundle.pi.get('QR_Pos', bundle.pi['DC_Low']).astype(np.float32)
+        # Pre-extract and cap market arrays. These are valuation stabilisers for
+        # dev notebooks; production calibration should reduce the need for caps.
+        P_da_all   = np.clip(np.exp(bundle.ln_P_base), -100.0, 500.0).astype(np.float32)
+        delta_all  = np.clip(bundle.delta_imb, -500.0, 500.0).astype(np.float32)
+        pi_dc_all  = np.clip(bundle.pi['DC_Low'], 0.0, 100.0).astype(np.float32)
+        pi_qr_all  = np.clip(bundle.pi.get('QR_Pos', bundle.pi['DC_Low']), 0.0, 100.0).astype(np.float32)
 
         # Intraday spread proxy: use lambda_1 loading on peak vs trough HH
         # If HPFC params aren't passed, approximate as zero
@@ -345,7 +355,7 @@ class LSMCSolver:
                     beta[t, j, k_idx, :] = b.astype(np.float32)
 
                     # Update V_next at this node for the NEXT backward step (t-1)
-                    V_next[j, k_idx, :] = (Phi @ b).astype(np.float32)
+                    V_next[j, k_idx, :] = np.clip(Phi @ b, -1e8, 1e8).astype(np.float32)
 
         if self.verbose:
             print(f"\n  Backward pass complete. beta shape: {beta.shape}")
@@ -442,11 +452,11 @@ class LSMCSolver:
         soc_store[:, 0] = E_n
         soh_store[:, 0] = SoH_n
 
-        # Pre-extract prices
-        P_da_all  = np.exp(bundle.ln_P_base).astype(np.float32)
-        delta_all = bundle.delta_imb.astype(np.float32)
-        pi_dc_all = bundle.pi['DC_Low'].astype(np.float32)
-        pi_qr_all = bundle.pi.get('QR_Pos', bundle.pi['DC_Low']).astype(np.float32)
+        # Pre-extract and cap prices consistently with backward().
+        P_da_all  = np.clip(np.exp(bundle.ln_P_base), -100.0, 500.0).astype(np.float32)
+        delta_all = np.clip(bundle.delta_imb, -500.0, 500.0).astype(np.float32)
+        pi_dc_all = np.clip(bundle.pi['DC_Low'], 0.0, 100.0).astype(np.float32)
+        pi_qr_all = np.clip(bundle.pi.get('QR_Pos', bundle.pi['DC_Low']), 0.0, 100.0).astype(np.float32)
 
         # SoH fade rate per HH step
         # Simplified: linear SoH degradation at cycle_rate EFCs/year
@@ -530,7 +540,7 @@ class LSMCSolver:
                             pi_dc[mask], pi_qr[mask],
                             E_m, t_hh, efa_block,
                         )   # (mask.sum(), 14)
-                        cont = (Phi_m @ b).astype(np.float32)   # (mask.sum(),)
+                        cont = np.clip(Phi_m @ b, -1e8, 1e8).astype(np.float32)
 
                         # Feasibility: clip infeasible modes to -inf
                         feas = True
