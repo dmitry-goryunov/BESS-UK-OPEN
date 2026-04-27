@@ -301,6 +301,7 @@ with tabs[4]:
 
 with tabs[5]:
     st.header("Phase 6: Backtest and P&L Attribution")
+    st.caption(f"Reading from: `{PROCESSED_DIR}`")
     phase6 = read_optional_json("phase6_summary.json")
     if phase6:
         st.json(phase6, expanded=False)
