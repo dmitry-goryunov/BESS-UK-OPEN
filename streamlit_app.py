@@ -281,12 +281,15 @@ with tabs[4]:
         mtm = mtm_summary.get("mtm", {})
         c1, c2, c3 = st.columns(3)
         with c1:
-            metric_card("MTM mean", mtm.get("mtm_mean", mtm.get("mean", "-")))
+            mtm_mean_val = mtm.get("mtm_mean", mtm.get("mean", mtm.get("total_mean", "-")))
+            metric_card("MTM mean", f"£{mtm_mean_val:,.0f}" if isinstance(mtm_mean_val, (int, float)) else "-")
         with c2:
             risk_95 = mtm_summary.get("risk_95", {})
-            metric_card("VaR 95", risk_95.get("var_gbp", "-"))
+            var_val = risk_95.get("var_gbp", "-")
+            metric_card("VaR 95", f"£{var_val:,.0f}" if isinstance(var_val, (int, float)) else "-")
         with c3:
-            metric_card("CVaR 95", risk_95.get("cvar_gbp", "-"))
+            cvar_val = risk_95.get("cvar_gbp", "-")
+            metric_card("CVaR 95", f"£{cvar_val:,.0f}" if isinstance(cvar_val, (int, float)) else "-")
 
         st.subheader("Summary JSON")
         st.json(mtm_summary, expanded=False)
@@ -301,7 +304,6 @@ with tabs[4]:
 
 with tabs[5]:
     st.header("Phase 6: Backtest and P&L Attribution")
-    st.caption(f"Reading from: `{PROCESSED_DIR}`")
     phase6 = read_optional_json("phase6_summary.json")
     if phase6:
         st.json(phase6, expanded=False)
