@@ -1,0 +1,82 @@
+{
+  "gamma": 2.1,
+  "fleet_mw": 6500.0,
+  "q_req": {
+    "DC_Low": 500,
+    "DC_High": 500,
+    "DM_Low": 200,
+    "DM_High": 200,
+    "DR_Low": 400,
+    "DR_High": 400,
+    "QR_Pos": 800,
+    "QR_Neg": 800
+  },
+  "p_res": {
+    "DC_Low": 17.0,
+    "DC_High": 17.0,
+    "DM_Low": 20.0,
+    "DM_High": 20.0,
+    "DR_Low": 20.0,
+    "DR_High": 20.0,
+    "QR_Pos": 12.0,
+    "QR_Neg": 8.0
+  },
+  "products": {
+    "DC_Low": {
+      "product": "DC_Low",
+      "phi": 0.85,
+      "sigma": 1.5,
+      "mu": 5.1,
+      "n_obs": 0
+    },
+    "DC_High": {
+      "product": "DC_High",
+      "phi": 0.85,
+      "sigma": 1.5,
+      "mu": 5.1,
+      "n_obs": 0
+    },
+    "DM_Low": {
+      "product": "DM_Low",
+      "phi": 0.85,
+      "sigma": 1.5,
+      "mu": 6.0,
+      "n_obs": 0
+    },
+    "DM_High": {
+      "product": "DM_High",
+      "phi": 0.85,
+      "sigma": 1.5,
+      "mu": 6.0,
+      "n_obs": 0
+    },
+    "DR_Low": {
+      "product": "DR_Low",
+      "phi": 0.85,
+      "sigma": 1.5,
+      "mu": 6.0,
+      "n_obs": 0
+    },
+    "DR_High": {
+      "product": "DR_High",
+      "phi": 0.85,
+      "sigma": 1.5,
+      "mu": 6.0,
+      "n_obs": 0
+    },
+    "QR_Pos": {
+      "product": "QR_Pos",
+      "phi": 0.85,
+      "sigma": 1.5,
+      "mu": 3.5999999999999996,
+      "n_obs": 0
+    },
+    "QR_Neg": {
+      "product": "QR_Neg",
+      "phi": 0.85,
+      "sigma": 1.5,
+      "mu": 2.4,
+      "n_obs": 0
+    }
+  }
+}

@@ -1,0 +1,30 @@
+{
+  "n_paths": 5000,
+  "n_steps": 17520,
+  "dt": 5.7077625570776254e-05,
+  "seed": 42,
+  "spot_price_gbp_mwh": {
+    "p5": 0.3118394613265991,
+    "p50": 1.0160107612609863,
+    "p95": 3.2519350051879883
+  },
+  "delta_imb_gbp_mwh": {
+    "p5": 26.3470401763916,
+    "p50": 67.18328857421875,
+    "p95": 323.2272033691406
+  },
+  "pi_dc_low_gbp_mwh": {
+    "p5": 1.2035205364227295,
+    "p50": 5.162204742431641,
+    "p95": 9.512849807739258
+  },
+  "validation": {
+    "chi_variance": true,
+    "xi_mean": true,
+    "xi_variance": true,
+    "delta_stationary_mean": true,
+    "pi_dc_non_negative": true,
+    "pi_dc_bounded": true,
+    "cross_corr_chi_delta_increment": true
+  }
+}
