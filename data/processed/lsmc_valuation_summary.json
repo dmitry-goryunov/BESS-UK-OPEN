@@ -4,19 +4,19 @@
   "asset_mw": 100.0,
   "asset_mwh": 200.0,
   "mtm_gbp": {
-    "mean": 13727677,
-    "std": 2580334,
-    "p5": 9365242,
-    "p50": 14195621,
-    "p95": 17411330
+    "mean": 13935596,
+    "std": 2848140,
+    "p5": 8993853,
+    "p50": 14503790,
+    "p95": 17835628
   },
   "mtm_gbp_per_mw": {
-    "mean": 137277,
-    "p50": 141956
+    "mean": 139356,
+    "p50": 145038
   },
-  "ri_mean_gbp": 995157,
-  "lsmc_ri_ratio": 13.794,
+  "ri_mean_gbp": 766836,
+  "lsmc_ri_ratio": 18.173,
   "v_lsmc_gte_v_ri": true,
-  "bwd_time_s": 68.6,
-  "fwd_time_s": 171.8
+  "bwd_time_s": 63.4,
+  "fwd_time_s": 28.3
 }
