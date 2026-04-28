@@ -215,6 +215,7 @@ class LSMCSolver:
         # Degradation shadow price
         self.deg_cost = float(deg_cfg.get('lambda_deg_init_gbp_mwh', 6.0))
         self.vom      = float(asset_cfg.get('vom_gbp_mwh', 1.2))
+        self.ridge_alpha = float(lsmc_cfg.get('ridge_alpha', 1e-3))
 
         # Pre-stack mode fractions as arrays (M,) for vectorised dispatch
         self._net_fracs = np.array([m.net_frac  for m in self.modes], np.float32)
@@ -306,7 +307,7 @@ class LSMCSolver:
         # float32 normal-equation rounding from producing explosive coefficients
         # (seen as ±1e27 betas), yet small relative to typical PhiT_Phi diagonals
         # of ~N*feature_scale² ≈ 250, so regression accuracy is barely affected.
-        reg = 1e-4
+        reg = self.ridge_alpha
 
         # Backward loop
         for t in range(T - 1, -1, -1):
@@ -369,19 +370,31 @@ class LSMCSolver:
                     Phi = basis_matrix(P_da, P_id, delta, pi_dc, pi_qr,
                                        E_j, t_hh, efa_block)   # (N, 14)
 
-                    # OLS with Tikhonov regularisation — all arithmetic in float64
-                    # to avoid float32 rounding in the normal equations producing
-                    # explosive coefficients (±1e27 betas) that overflow the forward pass.
-                    Phi64    = Phi.astype(np.float64)
-                    Y64      = Y.astype(np.float64)
-                    PhiT_Phi = Phi64.T @ Phi64 + reg * np.eye(N_BASIS)
-                    PhiT_Y   = Phi64.T @ Y64
+                    # OLS with feature standardisation and ridge regularisation.
+                    # Work in float64 to avoid float32 rounding in the normal
+                    # equations producing explosive coefficients.
+                    Phi64 = Phi.astype(np.float64)
+                    Y64 = Y.astype(np.float64)
+                    mu = Phi64.mean(axis=0)
+                    sd = Phi64.std(axis=0)
+                    mu[0] = 0.0
+                    sd[0] = 1.0
+                    sd = np.where(sd > 1e-8, sd, 1.0)
+                    Z = (Phi64 - mu) / sd
+
+                    ridge = reg * np.eye(N_BASIS)
+                    ridge[0, 0] = 0.0
+                    PhiT_Phi = Z.T @ Z + ridge
+                    PhiT_Y = Z.T @ Y64
                     try:
-                        b = np.linalg.solve(PhiT_Phi, PhiT_Y)
-                        if not np.all(np.isfinite(b)):
-                            b, _, _, _ = np.linalg.lstsq(PhiT_Phi, PhiT_Y, rcond=None)
+                        gamma = np.linalg.solve(PhiT_Phi, PhiT_Y)
+                        if not np.all(np.isfinite(gamma)):
+                            gamma, _, _, _ = np.linalg.lstsq(PhiT_Phi, PhiT_Y, rcond=None)
                     except np.linalg.LinAlgError:
-                        b = np.zeros(N_BASIS)
+                        gamma = np.zeros(N_BASIS)
+
+                    b = gamma / sd
+                    b[0] = gamma[0] - np.sum(gamma[1:] * mu[1:] / sd[1:])
                     beta[t, j, k_idx, :] = np.where(
                         np.isfinite(b), b, 0.0
                     ).astype(np.float32)

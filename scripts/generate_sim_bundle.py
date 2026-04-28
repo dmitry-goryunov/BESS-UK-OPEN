@@ -20,6 +20,7 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from src.processes.ancillary import AncillaryParams
+from src.config import SCHWARTZ_SMITH
 from src.processes.hpfc import HPFCParams
 from src.processes.imbalance import ImbalanceParams
 from src.processes.schwartz_smith import SSParams
@@ -66,6 +67,13 @@ def main() -> None:
     ss_p, hpfc_p, imb_p, anc_p = load_params(processed_dir)
 
     print(f"Simulating {args.paths:,} paths x {args.steps:,} steps...")
+    xi_0 = None
+    anchor = SCHWARTZ_SMITH.get("forward_anchor_gbp_mwh")
+    if anchor is not None and anchor > 0:
+        import numpy as np
+        xi_0 = np.full(args.paths, np.log(float(anchor)))
+        print(f"Anchoring xi_0 to forward price: GBP {float(anchor):.2f}/MWh")
+
     bundle = simulate(
         ss_p,
         hpfc_p,
@@ -75,6 +83,7 @@ def main() -> None:
         n_steps=args.steps,
         dt=dt,
         seed=args.seed,
+        xi_0=xi_0,
     )
 
     args.out.parent.mkdir(parents=True, exist_ok=True)
@@ -87,4 +96,3 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
-
