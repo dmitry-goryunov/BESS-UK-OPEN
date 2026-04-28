@@ -262,25 +262,9 @@ bess_project/
 
 ## Potential Improvements
 
-### Tier 1 — Correctness (fix before trusting any numbers)
+### Tier 1 - Correctness (fix before trusting any numbers)
 
-1. Ensure Phase 5 loads Phase 4 artefacts and fails loudly if they are missing.
-   Currently Phase 5 silently falls back to a 200-path × 240-step (5-day) mini
-   LSMC when `lsmc_valuation_result.pkl` is not found, and the MTM aggregation
-   extrapolates from that 5-day run. Phase 4 should save
-   `lsmc_valuation_result.pkl` and `lsmc_policy.pkl` unconditionally; Phase 5
-   should raise an error rather than silently substituting a dev run.
-2. Anchor Phase 3 simulation by default with
-   `xi_0 = log(forward_anchor_gbp_mwh)` so standalone simulations do not start
-   near `exp(0) = GBP 1/MWh`.
-3. Add LSMC regression feature standardisation and a ridge penalty. The current
-   beta range of [-35M, +90M] indicates the polynomial basis is numerically
-   unstable: `P_da²` ~ 10,000 and `P_da³` ~ 1M dwarf the other features in
-   scale. Standardising each feature to zero mean / unit variance before
-   regression and adding a small ridge `alpha` will tighten coefficients and
-   is the root fix for the inflated V_LSMC / V_RI = 17.7x ratio. The
-   diagnostics item below adds checks; this item adds the cure.
-4. Replace the synthetic forward curve with historical ICE/EEX forward panels
+1. Replace the synthetic forward curve with historical ICE/EEX forward panels
    containing multiple `as_of_date`s and short maturities: front month, quarter,
    season, and year. The Kalman filter currently runs on a panel generated from
    its own prior parameters, so `sigma_obs` hits its lower bound (0.001) and
