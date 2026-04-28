@@ -82,13 +82,13 @@ that cell. The LSMC valuation run sets the forward anchor explicitly.
 | V_LSMC mean | GBP 3.03M |
 | V_LSMC mean per MW | GBP 30.3k/MW |
 | V_LSMC P5 / P50 / P95 | GBP 2.89M / GBP 3.03M / GBP 3.16M |
-| Rolling intrinsic mean | GBP 171k |
-| V_LSMC / V_RI | 17.7x |
+| Rolling intrinsic mean, DA-only | GBP 171k |
+| V_LSMC / V_RI diagnostic | 17.7x |
 | Backward / forward pass | 42.6 s / 21.3 s |
 
-`V_LSMC >= V_RI` is confirmed. The ratio remains higher than the expected
-3-8x range and should be treated as provisional until the LSMC regression
-diagnostics are hardened.
+`V_LSMC >= V_RI` is confirmed. The ratio is not a valuation multiple because
+the RI benchmark is DA-only and sampled for runtime, while LSMC includes
+ancillary and imbalance optionality. Treat it as a lower-bound diagnostic.
 
 ### Phase 5 - MTM, Greeks & VaR
 
