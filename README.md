@@ -262,41 +262,83 @@ bess_project/
 
 ## Potential Improvements
 
-1. Replace the synthetic forward curve with historical ICE/EEX forward panels
-   containing multiple `as_of_date`s and short maturities: front month, quarter,
-   season, and year.
+### Tier 1 — Correctness (fix before trusting any numbers)
+
+1. Ensure Phase 5 loads Phase 4 artefacts and fails loudly if they are missing.
+   Currently Phase 5 silently falls back to a 200-path × 240-step (5-day) mini
+   LSMC when `lsmc_valuation_result.pkl` is not found, and the MTM aggregation
+   extrapolates from that 5-day run. Phase 4 should save
+   `lsmc_valuation_result.pkl` and `lsmc_policy.pkl` unconditionally; Phase 5
+   should raise an error rather than silently substituting a dev run.
 2. Anchor Phase 3 simulation by default with
    `xi_0 = log(forward_anchor_gbp_mwh)` so standalone simulations do not start
    near `exp(0) = GBP 1/MWh`.
-3. Add a historical spot-derived baseload fallback, clearly labelled as a spot
-   proxy rather than a risk-neutral forward calibration.
-4. Model negative day-ahead prices directly with an arithmetic two-factor model,
-   shifted lognormal process, or explicit negative-price regime.
-5. Recheck imbalance-process unit scaling between calibration and simulation,
+3. Add LSMC regression feature standardisation and a ridge penalty. The current
+   beta range of [-35M, +90M] indicates the polynomial basis is numerically
+   unstable: `P_da²` ~ 10,000 and `P_da³` ~ 1M dwarf the other features in
+   scale. Standardising each feature to zero mean / unit variance before
+   regression and adding a small ridge `alpha` will tighten coefficients and
+   is the root fix for the inflated V_LSMC / V_RI = 17.7x ratio. The
+   diagnostics item below adds checks; this item adds the cure.
+4. Replace the synthetic forward curve with historical ICE/EEX forward panels
+   containing multiple `as_of_date`s and short maturities: front month, quarter,
+   season, and year. The Kalman filter currently runs on a panel generated from
+   its own prior parameters, so `sigma_obs` hits its lower bound (0.001) and
+   the calibrated parameters are essentially the priors rather than
+   market-implied values.
+
+### Tier 2 — Model gaps (significant impact on outputs)
+
+5. Update NESO ancillary data ingestion by refreshing resource IDs or supporting
+   manual CSV uploads for DC/DM/DR/QR/BR clearing prices. All eight products
+   currently show `n_obs = 0` in Phase 2 output; the AR(1) parameters are pure
+   calibration priors.
+6. Rework the dual-bound oracle so the information-relaxation bound is a
+   meaningful upper bound rather than a degenerate 0% gap.
+7. Model negative day-ahead prices directly with an arithmetic two-factor model,
+   shifted lognormal process, or explicit negative-price regime. 1,032 of 36,240
+   half-hours (2.8%) are negative in the Phase 1 data; the log-normal model
+   clips these, missing charge-on-negative-price revenue.
+8. Replace year-by-year chaining with a single long-horizon simulation for
+   lifecycle MTM, so that SoH degradation, augmentation timing, and price
+   dynamics interact correctly across the full 15-year horizon rather than being
+   joined post-hoc by an annuity factor.
+9. Recheck imbalance-process unit scaling between calibration and simulation,
    especially `theta_delta`, jump intensity, and half-hour/day conversions.
-6. Promote the historical perfect-foresight benchmark in the phase workflow and
-   compare LSMC, rolling intrinsic, DA perfect foresight, and SP perfect foresight
-   side by side.
-7. Add a combined market optimiser where DA, imbalance/system price, and
-   ancillary decisions share one physical battery dispatch constraint.
-8. Update NESO ancillary data ingestion by refreshing resource IDs or supporting
-   manual CSV uploads for DC/DM/DR/QR/BR clearing prices.
-9. Add an intraday market spread process or historical intraday benchmark.
-10. Harden LSMC diagnostics for regression rank deficiency, extreme beta
-    coefficients, continuation-value monotonicity, action distributions, and
-    out-of-sample forward stability.
-11. Rework the dual-bound oracle so the information-relaxation bound is a
-    meaningful upper bound rather than a degenerate 0% gap.
-12. Keep large generated artefacts out of Git where possible; commit code and
-    small summaries, and publish heavy plots/parquet outputs via releases or
-    external storage.
+
+### Tier 3 — Model completeness
+
+10. Add a combined market optimiser where DA, imbalance/system price, and
+    ancillary decisions share one physical battery dispatch constraint.
+11. Add an intraday market spread process or historical intraday benchmark. The
+    LSMC basis function includes `P_id - P_da` but no intraday process is
+    simulated, so this feature is always zero in the current forward pass.
+12. Fit a regime-switching ancillary saturation curve rather than one static
+    exponent. The static γ = 2.1 does not capture product-mix shifts between
+    DC/DM/DR/QR or seasonal patterns.
 13. Replace flat Capacity Market revenue with delivery-year clearing prices and
     derating-specific assumptions.
-14. Fit a regime-switching ancillary saturation curve rather than one static
-    exponent.
-15. Replace year-by-year chaining with a single long-horizon simulation for
-    lifecycle MTM.
-16. Parallelise bump-and-revalue Greeks and cache shared simulation inputs.
+14. Add LSMC diagnostics for regression rank deficiency, continuation-value
+    monotonicity, action distributions, and out-of-sample forward stability.
+15. Add a historical spot-derived baseload fallback, clearly labelled as a spot
+    proxy rather than a risk-neutral forward calibration.
+16. Promote the historical perfect-foresight benchmark in the phase workflow and
+    compare LSMC, rolling intrinsic, DA perfect foresight, and SP perfect
+    foresight side by side.
+
+### Tier 4 — Engineering
+
+17. Parallelise bump-and-revalue Greeks and cache shared simulation inputs.
+    Tier-2 Greeks each re-run the full LSMC; only the forward pass needs to
+    re-run per bump once the base beta coefficients are cached.
+18. Replace the 4.9 GB pickle for `sim_bundle` with memory-mapped arrays
+    (NumPy `.npy` memmap, zarr, or HDF5) to allow lazy loading, partial reads
+    for Greek re-solves, and a smaller peak RAM footprint.
+19. Keep large generated artefacts out of Git where possible; commit code and
+    small summaries, and publish heavy plots/parquet outputs via releases or
+    external storage.
+20. Deduplicate `find_project_root()`, which appears verbatim in every phase
+    notebook, into `src/utils.py` and import it.
 
 ---
 
