@@ -135,8 +135,8 @@ Scenario stresses:
 | Metric | Value |
 |---|---:|
 | V_LSMC | GBP 64,471 |
-| V_dual | GBP 64,471 |
-| Dual gap | 0.00% |
+| V_upper | Recomputed by Phase 6 |
+| Upper gap | Recomputed by Phase 6 |
 | 30-day delta MTM | GBP 201,769 |
 | 30-day residual | GBP 885,119 |
 | Residual / total | 4.39% |
@@ -146,10 +146,10 @@ Scenario stresses:
 | Target passed | No |
 | Base SOH at year 15 | 68.9% |
 
-The dual gap is still degenerate and should not be interpreted as a robust upper
-bound. The backtest residual improved materially versus the earlier synthetic
-run, but still narrowly misses the target flag because the implementation checks
-a strict fractional threshold.
+Phase 6 now reports a clairvoyant information-relaxation upper benchmark rather
+than the earlier clamped dual estimate. The backtest residual improved
+materially versus the earlier synthetic run, but still narrowly misses the
+target flag because the implementation checks a strict fractional threshold.
 
 ### Phase 7 - Historical Perfect-Foresight Benchmark
 
@@ -277,13 +277,11 @@ bess_project/
    manual CSV uploads for DC/DM/DR/QR/BR clearing prices. All eight products
    currently show `n_obs = 0` in Phase 2 output; the AR(1) parameters are pure
    calibration priors.
-3. Rework the dual-bound oracle so the information-relaxation bound is a
-   meaningful upper bound rather than a degenerate 0% gap.
-4. Model negative day-ahead prices directly with an arithmetic two-factor model,
+3. Model negative day-ahead prices directly with an arithmetic two-factor model,
    shifted lognormal process, or explicit negative-price regime. 1,032 of 36,240
    half-hours (2.8%) are negative in the Phase 1 data; the log-normal model
    clips these, missing charge-on-negative-price revenue.
-5. Replace year-by-year chaining with a single long-horizon simulation for
+4. Replace year-by-year chaining with a single long-horizon simulation for
    lifecycle MTM, so that SoH degradation, augmentation timing, and price
    dynamics interact correctly across the full 15-year horizon rather than being
    joined post-hoc by an annuity factor.

@@ -20,6 +20,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from src.processes.simulate import simulate, default_params_from_config
 from src.processes.imbalance import ImbalanceParams
 from src.optimisation.lsmc import run_lsmc
+from src.optimisation.dual_bound import compute_dual_bound
 from src.valuation.mtm import aggregate_mtm
 from src.config import ASSET, LSMC as LSMC_CFG, DEGRADATION, FINANCE, SCHWARTZ_SMITH
 
@@ -36,6 +37,22 @@ def small_bundle():
     # default_params_from_config() leaves xi_0=None (→ 0), giving exp(0)=£1/MWh.
     xi_init = np.full(50, np.log(SCHWARTZ_SMITH["forward_anchor_gbp_mwh"]))
     return simulate(ss, hpfc, imb, anc, n_paths=50, n_steps=96, seed=0, xi_0=xi_init)
+
+
+@pytest.fixture(scope="module")
+def small_lsmc_result(small_bundle):
+    """Small policy/result pair reused by MTM and benchmark sanity checks."""
+    lsmc_cfg = dict(LSMC_CFG)
+    lsmc_cfg["n_soc_nodes"] = 5
+    lsmc_cfg["soh_nodes"] = [1.0, 0.82]
+    return run_lsmc(
+        bundle=small_bundle,
+        asset_cfg=ASSET,
+        lsmc_cfg=lsmc_cfg,
+        deg_cfg=DEGRADATION,
+        fin_cfg=FINANCE,
+        verbose=False,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -134,20 +151,9 @@ class TestMtmComponentSigns:
     """Test C: each MTM component has the correct economic sign."""
 
     @pytest.fixture(scope="class")
-    def mtm_result(self, small_bundle):
-        """Run a minimal LSMC and aggregate MTM.  Uses 5 SoC nodes to stay fast."""
-        lsmc_cfg = dict(LSMC_CFG)
-        lsmc_cfg["n_soc_nodes"] = 5
-        lsmc_cfg["soh_nodes"]   = [1.0, 0.82]
-
-        _, val_result = run_lsmc(
-            bundle   = small_bundle,
-            asset_cfg = ASSET,
-            lsmc_cfg  = lsmc_cfg,
-            deg_cfg   = DEGRADATION,
-            fin_cfg   = FINANCE,
-            verbose   = False,
-        )
+    def mtm_result(self, small_lsmc_result):
+        """Aggregate MTM from the shared minimal LSMC run."""
+        _, val_result = small_lsmc_result
         return aggregate_mtm(val_result, ASSET, FINANCE, DEGRADATION, verbose=False)
 
     def test_opex_is_negative(self, mtm_result):
@@ -196,3 +202,28 @@ class TestMtmComponentSigns:
         assert 1.0 <= af <= ASSET["life_years"], (
             f"annuity_factor={af:.3f} is outside [1, {ASSET['life_years']}]"
         )
+
+
+class TestInformationRelaxationBenchmark:
+    """The upper-benchmark diagnostic should be finite and never clamped to pass."""
+
+    def test_clairvoyant_benchmark_is_not_forced_to_pass(self, small_bundle, small_lsmc_result):
+        policy, val_result = small_lsmc_result
+        result = compute_dual_bound(
+            small_bundle,
+            policy,
+            val_result,
+            ASSET,
+            LSMC_CFG,
+            DEGRADATION,
+            FINANCE,
+            n_dual_paths=5,
+            threshold=LSMC_CFG["dual_gap_acceptable"],
+            verbose=False,
+        )
+        assert result.n_paths == 5
+        assert np.isfinite(result.v_lsmc)
+        assert np.isfinite(result.v_dual)
+        assert np.isfinite(result.gap_pct)
+        if result.gap_abs < 0:
+            assert not result.dual_ok
