@@ -25,9 +25,22 @@ def load_parquet(path: Path) -> pd.DataFrame:
 
 
 @st.cache_data(show_spinner=False)
-def load_json(path: Path) -> dict:
+def load_json(path: Path, mtime_ns: int) -> dict:
+    _ = mtime_ns
     with path.open() as f:
         return json.load(f)
+
+
+def format_gbp(value, decimals: int = 2) -> str:
+    if not isinstance(value, (int, float)):
+        return "-"
+    sign = "-" if value < 0 else ""
+    abs_value = abs(value)
+    if abs_value >= 1_000_000:
+        return f"{sign}GBP {abs_value / 1_000_000:,.{decimals}f}M"
+    if abs_value >= 1_000:
+        return f"{sign}GBP {abs_value / 1_000:,.0f}k"
+    return f"{sign}GBP {abs_value:,.0f}"
 
 
 def file_status() -> pd.DataFrame:
@@ -45,7 +58,7 @@ def file_status() -> pd.DataFrame:
 
 def read_optional_json(name: str) -> dict | None:
     path = PROCESSED_DIR / name
-    return load_json(path) if path.exists() else None
+    return load_json(path, path.stat().st_mtime_ns) if path.exists() else None
 
 
 def show_optional_image(name: str, caption: str | None = None) -> None:
@@ -261,13 +274,14 @@ with tabs[3]:
         per_mw = lsmc_summary.get("mtm_gbp_per_mw", {})
         c1, c2, c3, c4 = st.columns(4)
         with c1:
-            metric_card("MTM mean", f"GBP {mtm.get('mean', 0):,}")
+            metric_card("MTM mean", format_gbp(mtm.get("mean")))
         with c2:
-            metric_card("MTM P50", f"GBP {mtm.get('p50', 0):,}")
+            metric_card("MTM P50", format_gbp(mtm.get("p50")))
         with c3:
-            metric_card("Per MW mean", f"GBP {per_mw.get('mean', 0):,}")
+            metric_card("Per MW mean", format_gbp(per_mw.get("mean"), decimals=1))
         with c4:
-            metric_card("LSMC / RI", lsmc_summary.get("lsmc_ri_ratio", "-"))
+            ratio = lsmc_summary.get("lsmc_ri_ratio")
+            metric_card("LSMC / RI", f"{ratio:.2f}x" if isinstance(ratio, (int, float)) else "-")
         st.dataframe(pd.json_normalize(lsmc_summary).T, use_container_width=True)
     else:
         st.info("No LSMC summary yet. Run Phase 4 in the notebook to create lsmc_valuation_summary.json.")
@@ -282,14 +296,14 @@ with tabs[4]:
         c1, c2, c3 = st.columns(3)
         with c1:
             mtm_mean_val = mtm.get("mtm_mean", mtm.get("mean", mtm.get("total_mean", "-")))
-            metric_card("MTM mean", f"£{mtm_mean_val:,.0f}" if isinstance(mtm_mean_val, (int, float)) else "-")
+            metric_card("MTM mean", format_gbp(mtm_mean_val))
         with c2:
             risk_95 = mtm_summary.get("risk_95", {})
             var_val = risk_95.get("var_gbp", "-")
-            metric_card("VaR 95", f"£{var_val:,.0f}" if isinstance(var_val, (int, float)) else "-")
+            metric_card("VaR 95", format_gbp(var_val))
         with c3:
             cvar_val = risk_95.get("cvar_gbp", "-")
-            metric_card("CVaR 95", f"£{cvar_val:,.0f}" if isinstance(cvar_val, (int, float)) else "-")
+            metric_card("CVaR 95", format_gbp(cvar_val))
 
         st.subheader("Summary JSON")
         st.json(mtm_summary, expanded=False)
@@ -317,4 +331,3 @@ with tabs[5]:
         "dual_bound.png",
     ]:
         show_optional_image(fig_name)
-
