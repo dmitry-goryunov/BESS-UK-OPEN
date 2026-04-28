@@ -10,6 +10,7 @@ import streamlit as st
 ROOT = Path(__file__).resolve().parent
 RAW_DIR = ROOT / "data" / "raw"
 PROCESSED_DIR = ROOT / "data" / "processed"
+NOTEBOOKS_DIR = ROOT / "notebooks"
 
 
 st.set_page_config(
@@ -20,7 +21,8 @@ st.set_page_config(
 
 
 @st.cache_data(show_spinner=False)
-def load_parquet(path: Path) -> pd.DataFrame:
+def load_parquet(path: Path, mtime_ns: int) -> pd.DataFrame:
+    _ = mtime_ns
     return pd.read_parquet(path)
 
 
@@ -31,6 +33,12 @@ def load_json(path: Path, mtime_ns: int) -> dict:
         return json.load(f)
 
 
+@st.cache_data(show_spinner=False)
+def load_image_bytes(path: Path, mtime_ns: int) -> bytes:
+    _ = mtime_ns
+    return path.read_bytes()
+
+
 def format_gbp(value, decimals: int = 2) -> str:
     if not isinstance(value, (int, float)):
         return "-"
@@ -39,8 +47,24 @@ def format_gbp(value, decimals: int = 2) -> str:
     if abs_value >= 1_000_000:
         return f"{sign}GBP {abs_value / 1_000_000:,.{decimals}f}M"
     if abs_value >= 1_000:
-        return f"{sign}GBP {abs_value / 1_000:,.0f}k"
+        return f"{sign}GBP {abs_value / 1_000:,.{decimals}f}k"
     return f"{sign}GBP {abs_value:,.0f}"
+
+
+def format_ratio(value, decimals: int = 2, suffix: str = "x") -> str:
+    return f"{value:,.{decimals}f}{suffix}" if isinstance(value, (int, float)) else "-"
+
+
+def format_pct(value, decimals: int = 2) -> str:
+    if not isinstance(value, (int, float)):
+        return "-"
+    return f"{value:,.{decimals}f}%"
+
+
+def format_fraction_pct(value, decimals: int = 2) -> str:
+    if not isinstance(value, (int, float)):
+        return "-"
+    return f"{100 * value:,.{decimals}f}%"
 
 
 def file_status() -> pd.DataFrame:
@@ -62,11 +86,13 @@ def read_optional_json(name: str) -> dict | None:
 
 
 def show_optional_image(name: str, caption: str | None = None) -> None:
-    path = PROCESSED_DIR / name
-    if path.exists():
-        st.image(str(path), caption=caption or name, use_container_width=True)
+    candidates = [path for path in [PROCESSED_DIR / name, NOTEBOOKS_DIR / name] if path.exists()]
+    if candidates:
+        path = max(candidates, key=lambda candidate: candidate.stat().st_mtime_ns)
+        image = load_image_bytes(path, path.stat().st_mtime_ns)
+        st.image(image, caption=caption or name, use_container_width=True)
     else:
-        st.info(f"Not generated yet: data/processed/{name}")
+        st.info(f"Not generated yet: {name}")
 
 
 def metric_card(label: str, value, help_text: str | None = None) -> None:
@@ -93,6 +119,10 @@ def flatten_distribution(summary: dict) -> pd.DataFrame:
     return pd.DataFrame(rows)
 
 
+def load_raw_parquet(path: Path) -> pd.DataFrame:
+    return load_parquet(path, path.stat().st_mtime_ns)
+
+
 st.title("BESS UK Stochastic Valuation")
 st.caption("Phase-by-phase dashboard using cached notebook outputs from the GB BESS valuation workflow.")
 
@@ -115,10 +145,10 @@ if missing:
     st.error(f"Missing cached data files: {', '.join(missing)}")
     st.stop()
 
-df_da = load_parquet(da_path)
-df_sp = load_parquet(sp_path)
-df_anc = load_parquet(anc_path)
-df_fwd = load_parquet(fwd_path)
+df_da = load_raw_parquet(da_path)
+df_sp = load_raw_parquet(sp_path)
+df_anc = load_raw_parquet(anc_path)
+df_fwd = load_raw_parquet(fwd_path)
 
 df_da["settlement_date"] = pd.to_datetime(df_da["settlement_date"])
 df_sp["settlement_date"] = pd.to_datetime(df_sp["settlement_date"])
@@ -293,34 +323,162 @@ with tabs[4]:
     mtm_summary = read_optional_json("mtm_summary.json")
     if mtm_summary:
         mtm = mtm_summary.get("mtm", {})
-        c1, c2, c3 = st.columns(3)
+        risk_95 = mtm_summary.get("risk_95", {})
+        risk_99 = mtm_summary.get("risk_99", {})
+        c1, c2, c3, c4 = st.columns(4)
         with c1:
-            mtm_mean_val = mtm.get("mtm_mean", mtm.get("mean", mtm.get("total_mean", "-")))
-            metric_card("MTM mean", format_gbp(mtm_mean_val))
+            metric_card("Lifetime MTM mean", format_gbp(risk_95.get("mean_gbp")))
         with c2:
-            risk_95 = mtm_summary.get("risk_95", {})
-            var_val = risk_95.get("var_gbp", "-")
-            metric_card("VaR 95", format_gbp(var_val))
+            metric_card("VaR 95", format_gbp(risk_95.get("var_gbp")))
         with c3:
-            cvar_val = risk_95.get("cvar_gbp", "-")
-            metric_card("CVaR 95", format_gbp(cvar_val))
+            metric_card("CVaR 95", format_gbp(risk_95.get("cvar_gbp")))
+        with c4:
+            metric_card("Annual mean", format_gbp(mtm.get("total_mean")), "GBP/MW/year")
 
-        st.subheader("Summary JSON")
-        st.json(mtm_summary, expanded=False)
+        st.subheader("MTM Components")
+        component_keys = [
+            "merchant",
+            "toll",
+            "floor_contracted",
+            "cm",
+            "floor_optionality",
+            "optimiser_fee",
+            "opex_fixed",
+            "augmentation",
+            "total_mean",
+        ]
+        component_rows = [
+            {"component": key, "GBP/MW/year": mtm[key]}
+            for key in component_keys
+            if key in mtm
+        ]
+        st.dataframe(
+            pd.DataFrame(component_rows),
+            hide_index=True,
+            use_container_width=True,
+        )
+
+        st.subheader("Risk Metrics")
+        risk_rows = [
+            {
+                "confidence": "95%",
+                "mean": risk_95.get("mean_gbp"),
+                "std": risk_95.get("std_gbp"),
+                "VaR": risk_95.get("var_gbp"),
+                "CVaR": risk_95.get("cvar_gbp"),
+                "P5": risk_95.get("p5_gbp"),
+                "P50": risk_95.get("p50_gbp"),
+                "P95": risk_95.get("p95_gbp"),
+            },
+            {
+                "confidence": "99%",
+                "mean": risk_99.get("mean_gbp"),
+                "std": risk_99.get("std_gbp"),
+                "VaR": risk_99.get("var_gbp"),
+                "CVaR": risk_99.get("cvar_gbp"),
+                "P5": risk_99.get("p5_gbp"),
+                "P50": risk_99.get("p50_gbp"),
+                "P95": risk_99.get("p95_gbp"),
+            },
+        ]
+        st.dataframe(pd.DataFrame(risk_rows), hide_index=True, use_container_width=True)
+
+        st.subheader("Greek Ladder")
+        greeks = mtm_summary.get("greeks", {})
+        if greeks:
+            greek_rows = [
+                {
+                    "name": item.get("name", name),
+                    "bump": item.get("bump_size"),
+                    "unit": item.get("bump_unit"),
+                    "sensitivity": item.get("greek"),
+                    "impact_pct": item.get("greek_pct"),
+                    "tier": item.get("tier"),
+                }
+                for name, item in greeks.items()
+            ]
+            st.dataframe(pd.DataFrame(greek_rows), hide_index=True, use_container_width=True)
+
+        st.subheader("Scenario Stress")
+        scenarios = mtm_summary.get("scenarios", {})
+        if scenarios:
+            scenario_rows = [
+                {
+                    "scenario": item.get("name", name),
+                    "stressed_mtm": item.get("stress_mtm_mean"),
+                    "delta": item.get("delta_gbp"),
+                    "delta_pct": item.get("delta_pct"),
+                }
+                for name, item in scenarios.items()
+            ]
+            st.dataframe(pd.DataFrame(scenario_rows), hide_index=True, use_container_width=True)
+
+        with st.expander("Raw Phase 5 JSON"):
+            st.json(mtm_summary, expanded=False)
     else:
         st.info("No Phase 5 summary found. Run the MTM / Greeks / VaR cells to create mtm_summary.json.")
 
-    c1, c2 = st.columns(2)
-    with c1:
-        show_optional_image("mtm_distribution.png", "MTM distribution")
-    with c2:
-        show_optional_image("scenario_stress.png", "Stress scenario impact")
+    st.subheader("Phase 5 Figures")
+    for row in [
+        [("mtm_components.png", "MTM components"), ("mtm_distribution.png", "MTM distribution")],
+        [("greek_ladder.png", "Greek ladder"), ("var_cvar.png", "VaR / CVaR")],
+        [("scenario_stress.png", "Stress scenario impact")],
+    ]:
+        columns = st.columns(len(row))
+        for column, (fig_name, caption) in zip(columns, row):
+            with column:
+                show_optional_image(fig_name, caption)
 
 with tabs[5]:
     st.header("Phase 6: Backtest and P&L Attribution")
     phase6 = read_optional_json("phase6_summary.json")
     if phase6:
-        st.json(phase6, expanded=False)
+        dual = phase6.get("dual_bound", {})
+        backtest = phase6.get("backtest", {})
+        c1, c2, c3, c4 = st.columns(4)
+        with c1:
+            metric_card("Dual gap", format_pct(dual.get("gap_pct")))
+        with c2:
+            metric_card("V LSMC", format_gbp(dual.get("v_lsmc")))
+        with c3:
+            metric_card("Residual / total", format_pct(backtest.get("residual_pct_total")))
+        with c4:
+            target = backtest.get("target_residual_pct")
+            metric_card("Residual target", format_fraction_pct(target))
+
+        st.subheader("P&L Attribution")
+        attribution_keys = [
+            "total_delta_mtm",
+            "total_theta",
+            "total_delta_explain",
+            "total_exec_surprise",
+            "total_deg_surprise",
+            "total_calib_effect",
+            "total_residual",
+        ]
+        attribution_rows = [
+            {"component": key, "GBP": backtest[key]}
+            for key in attribution_keys
+            if key in backtest
+        ]
+        st.dataframe(
+            pd.DataFrame(attribution_rows),
+            hide_index=True,
+            use_container_width=True,
+        )
+
+        st.subheader("Backtest Diagnostics")
+        diagnostic_rows = [
+            {"metric": "Periods", "value": backtest.get("n_periods")},
+            {"metric": "Mean daily residual", "value": format_pct(backtest.get("mean_daily_residual_pct"))},
+            {"metric": "P95 daily residual", "value": format_pct(backtest.get("p95_daily_residual_pct"))},
+            {"metric": "Target passed", "value": bool(backtest.get("pass_residual_target"))},
+            {"metric": "Base SOH year 15", "value": format_fraction_pct(phase6.get("soh_base_yr15"))},
+        ]
+        st.dataframe(pd.DataFrame(diagnostic_rows), hide_index=True, use_container_width=True)
+
+        with st.expander("Raw Phase 6 JSON"):
+            st.json(phase6, expanded=False)
     else:
         st.info("No Phase 6 summary found. Run Phase 6 cells to create phase6_summary.json.")
 
