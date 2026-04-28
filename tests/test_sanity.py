@@ -18,6 +18,7 @@ import pytest
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from src.processes.simulate import simulate, default_params_from_config
+from src.processes.imbalance import ImbalanceParams
 from src.optimisation.lsmc import run_lsmc
 from src.valuation.mtm import aggregate_mtm
 from src.config import ASSET, LSMC as LSMC_CFG, DEGRADATION, FINANCE, SCHWARTZ_SMITH
@@ -97,6 +98,32 @@ class TestPriceSimulation:
             f"delta_imb contains non-finite values; "
             f"n_nonfinite={np.sum(~np.isfinite(small_bundle.delta_imb))}"
         )
+
+    def test_delta_imb_uses_half_hour_units(self):
+        """One HH step must scale theta/sigma/lambda in half-hour units, not days."""
+        ss, hpfc, _, anc = default_params_from_config()
+        imb = ImbalanceParams(
+            theta_delta=np.log(2.0),   # half-life = 1 half-hour
+            sigma_delta=0.0,
+            lambda_jump=0.0,
+            jump_scale_pos=0.0,
+            jump_scale_neg=0.0,
+            p_pos=0.5,
+            mu_delta=10.0,
+        )
+        delta_0 = np.full(4, 50.0)
+        xi_0 = np.full(4, np.log(SCHWARTZ_SMITH["forward_anchor_gbp_mwh"]))
+        bundle = simulate(
+            ss, hpfc, imb, anc,
+            n_paths=4,
+            n_steps=1,
+            dt=1 / (365 * 48),
+            seed=123,
+            xi_0=xi_0,
+            delta_0=delta_0,
+        )
+        expected = 10.0 + 0.5 * (50.0 - 10.0)
+        assert np.allclose(bundle.delta_imb[:, 1], expected, atol=1e-6)
 
 
 # ---------------------------------------------------------------------------

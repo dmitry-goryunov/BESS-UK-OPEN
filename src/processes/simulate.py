@@ -285,16 +285,14 @@ def simulate(
     std_lam    = sigma_lam * np.sqrt(dt_in_days)              # (K,) per HH step
 
     # ------------------------------------------------------------------
-    # Pre-compute imbalance OU parameters
-    # theta_delta is per half-hour in calibration → use directly
+    # Pre-compute imbalance OU parameters.
+    # Imbalance calibration uses one half-hour as the natural unit, so convert
+    # simulation dt from years to half-hours before scaling theta/sigma/lambda.
     # ------------------------------------------------------------------
     imb = imb_params
-    exp_theta   = float(np.exp(-imb.theta_delta * dt * 365 * 48))  # if theta in 1/HH
-    # Actually if theta_delta was calibrated as per-day AR(1), adjust:
-    # theta_delta calibrated from AR(1): phi = exp(-theta * 1) per HH step
-    # Let's use phi = exp(-theta_delta * dt_in_days * 48) for per-HH step
-    exp_theta   = float(np.exp(-imb.theta_delta * dt_in_days))
-    std_delta   = float(imb.sigma_delta * np.sqrt(dt_in_days))
+    dt_in_hh    = dt * 365.0 * 48.0
+    exp_theta   = float(np.exp(-imb.theta_delta * dt_in_hh))
+    std_delta   = float(imb.sigma_delta * np.sqrt(dt_in_hh))
 
     # ------------------------------------------------------------------
     # Pre-compute ancillary AR(1) parameters
@@ -335,7 +333,7 @@ def simulate(
     # Constants that were previously recomputed inside the loop
     mu_d          = float(imb.mu_delta)
     mu_dc         = mu_prod['DC_Low']
-    lam_j         = float(imb.lambda_jump)
+    lam_j         = float(imb.lambda_jump * dt_in_hh)
     p_pos         = float(imb.p_pos)
     jump_scale_pos = float(imb.jump_scale_pos)
     jump_scale_neg = float(imb.jump_scale_neg)
@@ -559,10 +557,11 @@ def validate_marginals(
     ok_chi = abs(chi_var_sim - chi_var_theory) / max(chi_var_theory, 1e-9) < rtol
     results['chi_variance'] = (ok_chi, chi_var_sim, chi_var_theory)
 
-    # --- xi: BM with drift; use absolute tolerance floor = 3 * sigma/sqrt(N) ---
+    # --- xi: BM with drift; allow non-zero initial anchor xi_0 ---
     xi_T = bundle.xi[:, -1]
-    xi_mean_theory = ss_params.mu_xi * T * dt
-    xi_var_theory  = ss_params.sigma_xi**2 * T * dt
+    xi_0 = bundle.xi[:, 0]
+    xi_mean_theory = float(np.mean(xi_0) + ss_params.mu_xi * T * dt)
+    xi_var_theory  = float(np.var(xi_0) + ss_params.sigma_xi**2 * T * dt)
     xi_mean_sim = float(np.mean(xi_T))
     xi_var_sim  = float(np.var(xi_T))
     # Tolerance = max(rtol * |mean|, 3 * std / sqrt(N))  (CLT-based)
@@ -574,10 +573,11 @@ def validate_marginals(
 
     # --- delta: stationary mean accounting for net jump drift ---
     # Theoretical: E[Delta_ss] ≈ jump_drift_per_step / theta_per_step
-    # where theta_per_step = -ln(exp(-theta * dt_days)) ≈ theta * dt_days
-    dt_in_days = dt * 365.0
-    theta_per_step = imb_params.theta_delta * dt_in_days  # approx per HH
+    # where theta_per_step = -ln(exp(-theta * dt_hh)) ~= theta * dt_hh
+    dt_in_hh = dt * 365.0 * 48.0
+    theta_per_step = imb_params.theta_delta * dt_in_hh
     jump_drift = (imb_params.lambda_jump
+                  * dt_in_hh
                   * (imb_params.p_pos * imb_params.jump_scale_pos
                      - (1.0 - imb_params.p_pos) * imb_params.jump_scale_neg))
     delta_mean_theory = (imb_params.mu_delta
@@ -607,9 +607,10 @@ def validate_marginals(
     rho_incr = float(np.corrcoef(d_chi, d_delta)[0, 1])
     # Expected correlation is attenuated by jump noise in delta increments.
     # Attenuation ≈ std_diffusion / std_total:
-    std_diff_delta  = float(imb_params.sigma_delta * np.sqrt(dt_in_days))
+    std_diff_delta  = float(imb_params.sigma_delta * np.sqrt(dt_in_hh))
     # Approximate total std including jumps
     jump_var_per_step = (imb_params.lambda_jump
+                         * dt_in_hh
                          * (imb_params.p_pos * 2 * imb_params.jump_scale_pos**2
                             + (1 - imb_params.p_pos) * 2 * imb_params.jump_scale_neg**2))
     std_total_delta = float(np.sqrt(std_diff_delta**2 + jump_var_per_step))

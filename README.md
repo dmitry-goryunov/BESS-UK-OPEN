@@ -273,55 +273,53 @@ bess_project/
 
 ### Tier 2 — Model gaps (significant impact on outputs)
 
-5. Update NESO ancillary data ingestion by refreshing resource IDs or supporting
+2. Update NESO ancillary data ingestion by refreshing resource IDs or supporting
    manual CSV uploads for DC/DM/DR/QR/BR clearing prices. All eight products
    currently show `n_obs = 0` in Phase 2 output; the AR(1) parameters are pure
    calibration priors.
-6. Rework the dual-bound oracle so the information-relaxation bound is a
+3. Rework the dual-bound oracle so the information-relaxation bound is a
    meaningful upper bound rather than a degenerate 0% gap.
-7. Model negative day-ahead prices directly with an arithmetic two-factor model,
+4. Model negative day-ahead prices directly with an arithmetic two-factor model,
    shifted lognormal process, or explicit negative-price regime. 1,032 of 36,240
    half-hours (2.8%) are negative in the Phase 1 data; the log-normal model
    clips these, missing charge-on-negative-price revenue.
-8. Replace year-by-year chaining with a single long-horizon simulation for
+5. Replace year-by-year chaining with a single long-horizon simulation for
    lifecycle MTM, so that SoH degradation, augmentation timing, and price
    dynamics interact correctly across the full 15-year horizon rather than being
    joined post-hoc by an annuity factor.
-9. Recheck imbalance-process unit scaling between calibration and simulation,
-   especially `theta_delta`, jump intensity, and half-hour/day conversions.
 
 ### Tier 3 — Model completeness
 
-10. Add a combined market optimiser where DA, imbalance/system price, and
+6. Add a combined market optimiser where DA, imbalance/system price, and
     ancillary decisions share one physical battery dispatch constraint.
-11. Add an intraday market spread process or historical intraday benchmark. The
+7. Add an intraday market spread process or historical intraday benchmark. The
     LSMC basis function includes `P_id - P_da` but no intraday process is
     simulated, so this feature is always zero in the current forward pass.
-12. Fit a regime-switching ancillary saturation curve rather than one static
+8. Fit a regime-switching ancillary saturation curve rather than one static
     exponent. The static γ = 2.1 does not capture product-mix shifts between
     DC/DM/DR/QR or seasonal patterns.
-13. Replace flat Capacity Market revenue with delivery-year clearing prices and
+9. Replace flat Capacity Market revenue with delivery-year clearing prices and
     derating-specific assumptions.
-14. Add LSMC diagnostics for regression rank deficiency, continuation-value
+10. Add LSMC diagnostics for regression rank deficiency, continuation-value
     monotonicity, action distributions, and out-of-sample forward stability.
-15. Add a historical spot-derived baseload fallback, clearly labelled as a spot
+11. Add a historical spot-derived baseload fallback, clearly labelled as a spot
     proxy rather than a risk-neutral forward calibration.
-16. Promote the historical perfect-foresight benchmark in the phase workflow and
+12. Promote the historical perfect-foresight benchmark in the phase workflow and
     compare LSMC, rolling intrinsic, DA perfect foresight, and SP perfect
     foresight side by side.
 
 ### Tier 4 — Engineering
 
-17. Parallelise bump-and-revalue Greeks and cache shared simulation inputs.
+13. Parallelise bump-and-revalue Greeks and cache shared simulation inputs.
     Tier-2 Greeks each re-run the full LSMC; only the forward pass needs to
     re-run per bump once the base beta coefficients are cached.
-18. Replace the 4.9 GB pickle for `sim_bundle` with memory-mapped arrays
+14. Replace the 4.9 GB pickle for `sim_bundle` with memory-mapped arrays
     (NumPy `.npy` memmap, zarr, or HDF5) to allow lazy loading, partial reads
     for Greek re-solves, and a smaller peak RAM footprint.
-19. Keep large generated artefacts out of Git where possible; commit code and
+15. Keep large generated artefacts out of Git where possible; commit code and
     small summaries, and publish heavy plots/parquet outputs via releases or
     external storage.
-20. Deduplicate `find_project_root()`, which appears verbatim in every phase
+16. Deduplicate `find_project_root()`, which appears verbatim in every phase
     notebook, into `src/utils.py` and import it.
 
 ---
