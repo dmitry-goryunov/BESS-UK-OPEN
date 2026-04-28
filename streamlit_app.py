@@ -308,26 +308,23 @@ with tabs[3]:
         with c2:
             metric_card("MTM P50", format_gbp(mtm.get("p50")))
         with c3:
-            metric_card("Per MW mean", format_gbp(per_mw.get("mean"), decimals=1))
+            metric_card("MTM P5", format_gbp(mtm.get("p5")))
         with c4:
-            metric_card("RI mean (DA-only)", format_gbp(lsmc_summary.get("ri_mean_gbp")))
+            metric_card("MTM P95", format_gbp(mtm.get("p95")))
 
-        ratio = lsmc_summary.get("lsmc_ri_ratio")
-        if isinstance(ratio, (int, float)) and ratio > 8:
-            st.warning(
-                "LSMC / RI is elevated because the RI benchmark is DA-only and sampled for speed, "
-                "while LSMC includes ancillary and imbalance optionality. Treat it as a lower-bound "
-                "sanity check, not a valuation multiple."
-            )
+        c1, c2, c3 = st.columns(3)
+        with c1:
+            metric_card("Per MW mean", format_gbp(per_mw.get("mean"), decimals=1))
+        with c2:
+            metric_card("Backward pass", f"{lsmc_summary.get('bwd_time_s', 0):,.1f}s")
+        with c3:
+            metric_card("Forward pass", f"{lsmc_summary.get('fwd_time_s', 0):,.1f}s")
 
         phase4_rows = [
             {"metric": "V_LSMC mean", "value": mtm.get("mean")},
             {"metric": "V_LSMC P5", "value": mtm.get("p5")},
             {"metric": "V_LSMC P50", "value": mtm.get("p50")},
             {"metric": "V_LSMC P95", "value": mtm.get("p95")},
-            {"metric": "RI mean, DA-only", "value": lsmc_summary.get("ri_mean_gbp")},
-            {"metric": "LSMC / RI diagnostic", "value": ratio},
-            {"metric": "V_LSMC >= V_RI", "value": bool(lsmc_summary.get("v_lsmc_gte_v_ri"))},
             {"metric": "Backward pass seconds", "value": lsmc_summary.get("bwd_time_s")},
             {"metric": "Forward pass seconds", "value": lsmc_summary.get("fwd_time_s")},
         ]
