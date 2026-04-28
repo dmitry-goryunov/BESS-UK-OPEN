@@ -283,7 +283,7 @@ class LSMCSolver:
 
         # Pre-extract and cap market arrays. These are valuation stabilisers for
         # dev notebooks; production calibration should reduce the need for caps.
-        P_da_all   = np.clip(np.exp(bundle.ln_P_base), -100.0, 500.0).astype(np.float32)
+        P_da_all   = np.exp(np.clip(bundle.ln_P_base, -100.0, np.log(500.0))).astype(np.float32)
         delta_all  = np.clip(bundle.delta_imb, -500.0, 500.0).astype(np.float32)
         pi_dc_all  = np.clip(bundle.pi['DC_Low'], 0.0, 100.0).astype(np.float32)
         pi_qr_all  = np.clip(bundle.pi.get('QR_Pos', bundle.pi['DC_Low']), 0.0, 100.0).astype(np.float32)
@@ -472,7 +472,7 @@ class LSMCSolver:
         soh_store[:, 0] = SoH_n
 
         # Pre-extract and cap prices consistently with backward().
-        P_da_all  = np.clip(np.exp(bundle.ln_P_base), -100.0, 500.0).astype(np.float32)
+        P_da_all  = np.exp(np.clip(bundle.ln_P_base, -100.0, np.log(500.0))).astype(np.float32)
         delta_all = np.clip(bundle.delta_imb, -500.0, 500.0).astype(np.float32)
         pi_dc_all = np.clip(bundle.pi['DC_Low'], 0.0, 100.0).astype(np.float32)
         pi_qr_all = np.clip(bundle.pi.get('QR_Pos', bundle.pi['DC_Low']), 0.0, 100.0).astype(np.float32)
@@ -636,9 +636,10 @@ class LSMCSolver:
             mtm_std        = float(np.std(pv_paths)),
             mtm_p5         = float(np.percentile(pv_paths, 5)),
             mtm_p95        = float(np.percentile(pv_paths, 95)),
-            efc_total      = float(
-                np.mean(np.abs(act_store).astype(float))
-            ),  # approx
+            efc_total      = float(np.mean(
+                np.sum(np.maximum(-np.diff(soc_store, axis=1), 0.0), axis=1)
+                / max(self.E_name, 1.0)
+            )),
         )
 
     def forward_parallel(

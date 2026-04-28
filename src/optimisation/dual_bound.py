@@ -117,13 +117,12 @@ def _compute_penalty(
         return np.zeros(N)
 
     # Get next-step state variables
-    P_da_next   = bundle.P_da[:N, t + 1]
-    P_id_next   = bundle.P_id[:N, t + 1] if hasattr(bundle, 'P_id') else P_da_next
-    delta_next  = bundle.delta_imb[:N, t + 1]
-    pi_dc_next  = bundle.pi_dc[:N, t + 1]
-    pi_qr_next  = bundle.pi_qr[:N, t + 1]
+    P_da_next  = np.exp(np.clip(bundle.ln_P_base[:N, t + 1], -100.0, np.log(500.0))).astype(np.float32)
+    delta_next = bundle.delta_imb[:N, t + 1]
+    pi_dc_next = bundle.pi['DC_Low'][:N, t + 1]
+    pi_qr_next = bundle.pi.get('QR_Pos', bundle.pi['DC_Low'])[:N, t + 1]
 
-    P_id_spr = P_id_next - P_da_next
+    P_id_spr = np.zeros_like(P_da_next)   # intraday spread not in PathBundle
     t_hh     = (t + 1) % 48
     efa_blk  = t_hh // 8
 
@@ -252,10 +251,10 @@ def compute_dual_bound(
             disc_t = disc_hh ** t
 
             # Oracle sees future prices (information relaxation)
-            P_da_t   = float(bundle.P_da[n, t])
+            P_da_t   = float(np.exp(np.clip(bundle.ln_P_base[n, t], -100.0, np.log(500.0))))
             delta_t  = float(bundle.delta_imb[n, t])
-            pi_dc_t  = float(bundle.pi_dc[n, t])
-            pi_qr_t  = float(bundle.pi_qr[n, t])
+            pi_dc_t  = float(bundle.pi['DC_Low'][n, t])
+            pi_qr_t  = float(bundle.pi.get('QR_Pos', bundle.pi['DC_Low'])[n, t])
 
             # Find nearest SoC grid node
             j_idx = int(np.searchsorted(soc_grid, E, side="right")) - 1
@@ -265,34 +264,39 @@ def compute_dual_bound(
             E_max_t = E_name * float(asset_cfg["soc_max_frac"]) * soh
             fmask   = feasibility_mask(
                 modes, E, soh,
-                P_bar, eta_c, eta_d, dt_h, E_min, E_max_t
+                P_bar,
+                float(asset_cfg["soc_min_frac"]),
+                float(asset_cfg["soc_max_frac"]),
+                E_name,
+                eta_c, eta_d, dt_h,
             )
             feas_modes = [m for m, ok in zip(modes, fmask) if ok]
             if not feas_modes:
                 continue
 
-            # Cashflow for all feasible modes
-            net_fracs = np.array([m.net_frac   for m in feas_modes], np.float32)
-            dc_fracs  = np.array([m.r_dc_frac  for m in feas_modes], np.float32)
-            qr_fracs  = np.array([m.r_qr_frac  for m in feas_modes], np.float32)
-
+            # Cashflow for all feasible modes (single-path call, shape (1, M_f))
             cfs = cashflow_batch(
                 feas_modes,
-                P_da      = np.full(len(feas_modes), P_da_t,  np.float32),
-                delta     = np.full(len(feas_modes), delta_t, np.float32),
-                pi_dc     = np.full(len(feas_modes), pi_dc_t, np.float32),
-                pi_qr     = np.full(len(feas_modes), pi_qr_t, np.float32),
+                P_da      = np.array([P_da_t],  dtype=np.float32),
+                delta_imb = np.array([delta_t], dtype=np.float32),
+                pi_dc     = np.array([pi_dc_t], dtype=np.float32),
+                pi_qr     = np.array([pi_qr_t], dtype=np.float32),
                 P_bar_mw  = P_bar,
                 dt_h      = dt_h,
                 deg_cost  = deg_cost,
                 vom       = vom,
-            )   # shape (1, M)
+            )   # shape (1, M_f)
 
             # Compute next SoC for each feasible mode
+            # discharge (net_frac>0): ΔE = -net_frac*P_bar/eta_d*dt_h  (negative)
+            # charge    (net_frac<0): ΔE = -net_frac*P_bar*eta_c*dt_h  (positive)
             next_Es = np.array([
                 np.clip(
-                    E - m.net_frac * P_bar * (dt_h / eta_d if m.net_frac >= 0 else -dt_h * eta_c),
-                    E_min, E_max_t
+                    E + (
+                        -m.net_frac * P_bar / eta_d * dt_h if m.net_frac >= 0
+                        else -m.net_frac * P_bar * eta_c * dt_h
+                    ),
+                    E_min, E_max_t,
                 )
                 for m in feas_modes
             ])
@@ -301,11 +305,12 @@ def compute_dual_bound(
             # Interpolate for each mode
             basis_t1_hh  = (t + 1) % 48
             basis_t1_efa = basis_t1_hh // 8
-            P_da_t1   = float(bundle.P_da[n, min(t+1, T-1)])
-            delta_t1  = float(bundle.delta_imb[n, min(t+1, T-1)])
-            pi_dc_t1  = float(bundle.pi_dc[n, min(t+1, T-1)])
-            pi_qr_t1  = float(bundle.pi_qr[n, min(t+1, T-1)])
-            P_id_t1   = float(bundle.P_id[n, min(t+1, T-1)]) if hasattr(bundle, 'P_id') else P_da_t1
+            t1 = min(t + 1, T - 1)
+            P_da_t1  = float(np.exp(np.clip(bundle.ln_P_base[n, t1], -100.0, np.log(500.0))))
+            delta_t1 = float(bundle.delta_imb[n, t1])
+            pi_dc_t1 = float(bundle.pi['DC_Low'][n, t1])
+            pi_qr_t1 = float(bundle.pi.get('QR_Pos', bundle.pi['DC_Low'])[n, t1])
+            P_id_t1  = P_da_t1   # intraday spread not in PathBundle; use baseload as proxy
 
             cont_vals = np.zeros(len(feas_modes))
             if t + 1 < T:

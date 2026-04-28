@@ -438,6 +438,11 @@ def default_params_from_config():
     Build SSParams, HPFCParams, ImbalanceParams, AncillaryParams from
     the project config dicts (src.config).
     Used for quick tests and demos before real calibration data is available.
+
+    Important: the returned SSParams has mu_xi=0 and no embedded price level.
+    Callers must pass xi_0=np.full(n_paths, np.log(forward_anchor)) to simulate()
+    so that exp(chi+xi) starts near the forward anchor (£76.7/MWh by default).
+    Without xi_0, prices start at exp(0)=£1/MWh.
     """
     from src.config import (SCHWARTZ_SMITH as SS_CFG, PCA_SHAPE,
                              IMBALANCE as IMB_CFG, ANCILLARY as ANC_CFG)
