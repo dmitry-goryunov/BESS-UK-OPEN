@@ -371,9 +371,17 @@ class LSMCSolver:
                     PhiT_Y   = Phi.T @ Y.astype(np.float32)
                     try:
                         b = np.linalg.solve(PhiT_Phi, PhiT_Y)
+                        if not np.all(np.isfinite(b)):
+                            # Near-singular normal equations (e.g. constant prices);
+                            # fall back to lstsq which uses SVD and is more robust.
+                            b, _, _, _ = np.linalg.lstsq(
+                                PhiT_Phi, PhiT_Y, rcond=None
+                            )
                     except np.linalg.LinAlgError:
                         b = np.zeros(N_BASIS, dtype=np.float32)
-                    beta[t, j, k_idx, :] = b.astype(np.float32)
+                    beta[t, j, k_idx, :] = np.where(
+                        np.isfinite(b), b, 0.0
+                    ).astype(np.float32)
 
                     # Update V_next at this node for the NEXT backward step (t-1)
                     V_next[j, k_idx, :] = np.clip(Phi @ b, -1e8, 1e8).astype(np.float32)
