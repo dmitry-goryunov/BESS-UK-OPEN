@@ -302,8 +302,11 @@ class LSMCSolver:
                 dt, self.soc_grid[0], self.soc_grid[-1],
             )
 
-        # Regularisation for lstsq
-        reg = 1e-6
+        # Ridge regularisation coefficient. 1e-4 is large enough to prevent
+        # float32 normal-equation rounding from producing explosive coefficients
+        # (seen as ±1e27 betas), yet small relative to typical PhiT_Phi diagonals
+        # of ~N*feature_scale² ≈ 250, so regression accuracy is barely affected.
+        reg = 1e-4
 
         # Backward loop
         for t in range(T - 1, -1, -1):
@@ -366,19 +369,19 @@ class LSMCSolver:
                     Phi = basis_matrix(P_da, P_id, delta, pi_dc, pi_qr,
                                        E_j, t_hh, efa_block)   # (N, 14)
 
-                    # OLS with Tikhonov regularisation
-                    PhiT_Phi = Phi.T @ Phi + reg * np.eye(N_BASIS, dtype=np.float32)
-                    PhiT_Y   = Phi.T @ Y.astype(np.float32)
+                    # OLS with Tikhonov regularisation — all arithmetic in float64
+                    # to avoid float32 rounding in the normal equations producing
+                    # explosive coefficients (±1e27 betas) that overflow the forward pass.
+                    Phi64    = Phi.astype(np.float64)
+                    Y64      = Y.astype(np.float64)
+                    PhiT_Phi = Phi64.T @ Phi64 + reg * np.eye(N_BASIS)
+                    PhiT_Y   = Phi64.T @ Y64
                     try:
                         b = np.linalg.solve(PhiT_Phi, PhiT_Y)
                         if not np.all(np.isfinite(b)):
-                            # Near-singular normal equations (e.g. constant prices);
-                            # fall back to lstsq which uses SVD and is more robust.
-                            b, _, _, _ = np.linalg.lstsq(
-                                PhiT_Phi, PhiT_Y, rcond=None
-                            )
+                            b, _, _, _ = np.linalg.lstsq(PhiT_Phi, PhiT_Y, rcond=None)
                     except np.linalg.LinAlgError:
-                        b = np.zeros(N_BASIS, dtype=np.float32)
+                        b = np.zeros(N_BASIS)
                     beta[t, j, k_idx, :] = np.where(
                         np.isfinite(b), b, 0.0
                     ).astype(np.float32)
