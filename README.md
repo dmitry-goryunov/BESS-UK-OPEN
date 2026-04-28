@@ -1,10 +1,10 @@
-# BESS-UK — Stochastic MTM Valuation
+# BESS-UK - Stochastic MTM Valuation
 
 Research framework for stochastic mark-to-market valuation of a Great Britain
 fast-cycle battery energy storage system (BESS), using Least-Squares Monte
 Carlo (LSMC) adapted from the Boogert & de Jong (2008) gas storage approach.
 
-**Asset**: 100 MW / 200 MWh LFP · 2h duration · 88% round-trip efficiency · GB grid
+**Asset**: 100 MW / 200 MWh LFP, 2h duration, 88% round-trip efficiency, GB grid.
 
 ---
 
@@ -13,93 +13,155 @@ Carlo (LSMC) adapted from the Boogert & de Jong (2008) gas storage approach.
 The model values a BESS as a real option: at each half-hour the operator chooses
 how much power to charge, discharge, and reserve for ancillary services. LSMC
 learns the optimal continuation value by backward induction, then rolls the
-policy forward to produce a MTM distribution. Six sequential phases:
+policy forward to produce an MTM distribution.
 
 | Phase | Module | What it produces |
 |---|---|---|
-| 1 · Data | `src/data/` | Elexon DA/SP prices, NESO ancillary clearing, forward curve |
-| 2 · Calibration | `src/processes/` | SS two-factor, PCA hourly shape, imbalance OU+jump, ancillary AR(1) |
-| 3 · Simulation | `src/processes/simulate.py` | 5,000-path × 17,520-step correlated PathBundle |
-| 4 · LSMC | `src/optimisation/lsmc.py` | β coefficients, dispatch policy, MTM distribution |
-| 5 · MTM / Greeks / VaR | `src/valuation/` | Life-time MTM, 15-factor Greek ladder, VaR/CVaR, scenarios |
-| 6 · Backtest | `src/attribution/` | Dual bound gap, 30-day P&L attribution |
+| 1 - Data | `src/data/` | Elexon DA/SP prices, NESO ancillary clearing, forward curve |
+| 2 - Calibration | `src/processes/` | Schwartz-Smith two-factor, PCA hourly shape, imbalance OU+jump, ancillary AR(1) |
+| 3 - Simulation | `src/processes/simulate.py` | 5,000-path x 17,520-step correlated `PathBundle` |
+| 4 - LSMC | `src/optimisation/lsmc.py` | Regression coefficients, dispatch policy, MTM distribution |
+| 5 - MTM / Greeks / VaR | `src/valuation/` | Lifetime MTM, Greek ladder, VaR/CVaR, scenario stresses |
+| 6 - Backtest | `src/attribution/` | Dual bound gap, 30-day P&L attribution |
 
 Everything runs end-to-end in `notebooks/bess_valuation_full.ipynb`.
 
 ---
 
-## Key outputs (current run)
+## Current Outputs
 
-### Phase 1 — Market data
+Latest published run: 28 April 2026.
+
+### Phase 1 - Market Data
+
 | Dataset | Rows | Period | Notes |
-|---|---|---|---|
-| Elexon DA prices | 36,240 | Apr 2024 – Apr 2026 | Mean £79.8/MWh, std £40.3 in 2025 |
-| Elexon system prices | 36,240 | Apr 2024 – Apr 2026 | Imbalance basis mean +£0.2, std £39.6 |
-| NESO ancillary clearing | 757 | Apr 2024 – Apr 2026 | DC £1.97, DM £6.24, QR £4.62 /MW/h mean |
-| Forward curve | 9 contracts | 2027–2030 | **Synthetic**, anchored to £76.7/MWh |
+|---|---:|---|---|
+| Elexon DA prices | 36,240 | Apr 2024-Apr 2026 | 2025 mean GBP 79.8/MWh, std GBP 40.3 |
+| Elexon system prices | 36,240 | Apr 2024-Apr 2026 | Imbalance basis mean +GBP 0.2/MWh, std GBP 39.6 |
+| NESO ancillary clearing | 757 | Apr 2024-Apr 2026 | DC GBP 1.97, DM GBP 6.24, QR GBP 4.62 /MW/h mean |
+| Forward curve | 9 contracts | 2027-2030 | Synthetic, anchored to GBP 76.7/MWh |
 
-1,032 half-hours had negative DA prices, confirming that a log-normal (Schwartz-Smith)
-spot model needs an arithmetic floor or a separate negative-price regime.
+1,032 half-hours had negative DA prices, confirming that a log-normal spot model
+needs an arithmetic floor or a separate negative-price regime.
 
-### Phase 2 — Calibration
+### Phase 2 - Calibration
+
 | Process | Key parameters |
 |---|---|
-| **Schwartz-Smith** | κ=4.02 (half-life 2.1 months), μ_ξ=0.007, σ_χ=2.00⚠, σ_ξ=0.011⚠, ρ=0.39 |
-| **PCA hourly shape** | 3 factors, 76.7% variance; PC1 HL 0.6d, PC2 HL 0.2d, PC3 HL 0.3d |
-| **Imbalance OU+jump** | θ=0.83/HH (HL 0.4h), σ=18.6 £/MWh, λ_J=0.043/HH (≈750 jumps/yr) |
-| **Ancillary AR(1)** | φ=0.85, γ_sat=2.10 (DCL collapse calibrated); fitted to priors only⚠ |
+| Schwartz-Smith | kappa=4.02, mu_xi=0.0069, sigma_chi=2.00, sigma_xi=0.0113, rho=0.39, n=936 |
+| PCA hourly shape | 3 factors, 76.7% variance explained |
+| Imbalance OU+jump | theta=0.83/HH, sigma=18.65 GBP/MWh, lambda_J=0.043/HH, n=36,240 |
+| Ancillary AR(1) | phi=0.85, gamma_sat=2.10, fitted to priors because current product observations are unavailable |
 
-⚠ σ_χ=2.0 is above the expected range (0.1–0.9) because the forward panel is
-synthetic with limited cross-sectional variation. σ_ξ=0.011 is correspondingly low.
-Both will normalise with real ICE/EEX forward data.
+The Schwartz-Smith volatility split remains distorted by the synthetic forward
+curve. Ancillary products still revert to priors because NESO resource IDs have
+changed for the current date range.
 
-⚠ Ancillary products show n_obs=0 for the current date range — NESO reorganised
-API resource IDs in late 2024. AR(1) parameters revert to calibration priors.
+### Phase 3 - Simulation
 
-### Phase 3 — Simulation
-- 5,000 paths × 17,520 half-hours (1 year), 40.9 s, 4.9 GB in-memory
-- All 7 marginal moment checks pass (χ variance, ξ mean/variance, imbalance stationarity, ancillary bounds, cross-correlations)
-- 3-year chaining validated (no SoC discontinuity at year boundary)
-- Spot P5/P50/P95: £0.3/£1.0/£3.3 — **prices are too low** because `xi_0` defaults to 0 instead of `log(76.7)` in the Phase 3 cell; the LSMC phase corrects this in its own simulate call
-
-### Phase 4 — LSMC valuation (1,000 paths, 1 yr)
 | Metric | Value |
-|---|---|
-| V_LSMC mean | **£13.94M** (£139,356/MW) |
-| V_LSMC std | £2.85M |
-| V_LSMC P5/P95 | £9.0M / £17.8M |
-| V_RI (rolling intrinsic) | £767k (£7,668/MW) |
-| V_LSMC / V_RI | **18.2×** |
-| Backward pass | 63.4 s · β shape (17520, 9, 3, 14) |
-| Forward pass | 28.3 s |
+|---|---:|
+| Paths | 5,000 |
+| Half-hour steps | 17,520 |
+| Seed | 42 |
+| Spot P5 / P50 / P95 | GBP 0.31 / GBP 1.00 / GBP 3.27 per MWh |
+| Imbalance P5 / P50 / P95 | GBP -237.38 / GBP -22.56 / GBP 219.44 per MWh |
+| DC low P5 / P50 / P95 | GBP 1.15 / GBP 5.15 / GBP 9.50 per MW/h |
+| Validation checks | 7 / 7 pass |
 
-V_LSMC ≥ V_RI confirmed. The 18× ratio is higher than typical (3–8×) and likely
-reflects the NaN issue in the β coefficients (see known issues).
+The Phase 3 standalone spot path remains too low because `xi_0` defaults to 0 in
+that cell. The LSMC valuation run sets the forward anchor explicitly.
 
-### Phase 5 — MTM, Greeks & VaR (mini run, 200 paths, 5 days)
-| Component | £/MW/yr |
-|---|---|
-| Merchant LSMC | +1,000 |
+### Phase 4 - LSMC Valuation
+
+| Metric | Value |
+|---|---:|
+| Paths | 1,000 |
+| Half-hour steps | 17,520 |
+| Asset | 100 MW / 200 MWh |
+| V_LSMC mean | GBP 3.03M |
+| V_LSMC mean per MW | GBP 30.3k/MW |
+| V_LSMC P5 / P50 / P95 | GBP 2.89M / GBP 3.03M / GBP 3.16M |
+| Rolling intrinsic mean | GBP 171k |
+| V_LSMC / V_RI | 17.7x |
+| Backward / forward pass | 42.6 s / 21.3 s |
+
+`V_LSMC >= V_RI` is confirmed. The ratio remains higher than the expected
+3-8x range and should be treated as provisional until the LSMC regression
+diagnostics are hardened.
+
+### Phase 5 - MTM, Greeks & VaR
+
+| Component | GBP/MW/yr |
+|---|---:|
+| Merchant LSMC | +814 |
 | Capacity Market | +1,051 |
-| Floor optionality (put) | +15,119 |
-| Optimiser fee | −128 |
-| Fixed O&M | −5,180 |
-| Augmentation capex | −12,527 |
-| **Total mean** | **−1,716** |
-
-Life-time MTM mean **−£2.57M** (negative because the mini LSMC run underestimates
-merchant revenue; the Phase 4 full run gives a positive V_LSMC before cost deductions).
+| Floor optionality | +15,221 |
+| Optimiser fee | -98 |
+| Fixed O&M | -5,180 |
+| Augmentation capex | -12,527 |
+| Total mean | -1,769 |
 
 | Risk metric | Value |
-|---|---|
-| VaR 90% | £3.08M/yr |
-| VaR 95% | £3.15M/yr |
-| CVaR 95% | £3.22M/yr |
-| Degradation shadow cost | £5.99/MWh throughput |
+|---|---:|
+| Lifetime MTM mean | GBP -2.65M |
+| Lifetime MTM std | GBP 180k |
+| VaR 95% | GBP 2.88M |
+| CVaR 95% | GBP 2.93M |
+| VaR 99% | GBP 2.95M |
+| CVaR 99% | GBP 2.98M |
 
-### Phase 6 — Dual bound & backtest
-- Dual bound gap: **0.00%** — degenerate result (upper bound std = £28B); needs more dual paths
-- Backtest residual: **434%** against a <5% target — backtest uses synthetic cashflows, not real dispatch data
+Largest current sensitivities:
+
+| Greek | Bump | Sensitivity |
+|---|---:|---:|
+| delta_soh | +1 pp | GBP -2.65M per fraction |
+| delta_rte | -2 pp | GBP -1.99M per fraction |
+| delta_availability | +2 pp | GBP +1.33M per fraction |
+| vega_da | +10 pp | GBP -796k per fraction |
+| delta_baseload | +GBP 1/MWh | GBP -66k |
+
+Scenario stresses:
+
+| Scenario | Delta |
+|---|---:|
+| High price | GBP -398k |
+| Low price | GBP +398k |
+| High volatility | GBP -212k |
+| Low ancillary | GBP +186k |
+| High discount | GBP +133k |
+
+### Phase 6 - Dual Bound & Backtest
+
+| Metric | Value |
+|---|---:|
+| V_LSMC | GBP 64,471 |
+| V_dual | GBP 64,471 |
+| Dual gap | 0.00% |
+| 30-day delta MTM | GBP 201,769 |
+| 30-day residual | GBP 885,119 |
+| Residual / total | 4.39% |
+| Mean daily residual | 1.09% |
+| P95 daily residual | 2.06% |
+| Residual target | 5.00% |
+| Target passed | No |
+| Base SOH at year 15 | 68.9% |
+
+The dual gap is still degenerate and should not be interpreted as a robust upper
+bound. The backtest residual improved materially versus the earlier synthetic
+run, but still narrowly misses the target flag because the implementation checks
+a strict fractional threshold.
+
+### Published Artifacts
+
+| Artifact | Path |
+|---|---|
+| End-to-end notebook | `notebooks/bess_valuation_full.ipynb` |
+| LSMC valuation chart | `data/processed/lsmc_valuation.png` |
+| LSMC summary | `data/processed/lsmc_valuation_summary.json` |
+| MTM / Greeks / VaR summary | `data/processed/mtm_summary.json` |
+| Dual bound / backtest summary | `data/processed/phase6_summary.json` |
+| Notebook output charts | `notebooks/mtm_components.png`, `notebooks/mtm_distribution.png`, `notebooks/greek_ladder.png`, `notebooks/var_cvar.png`, `notebooks/scenario_stress.png`, `notebooks/dual_bound.png`, `notebooks/pnl_attribution.png` |
 
 ---
 
@@ -115,128 +177,89 @@ pip install -r requirements.txt
 # Full end-to-end notebook
 jupyter nbconvert --to notebook --execute notebooks/bess_valuation_full.ipynb
 
-# Pre-generate the simulation bundle (skips Phases 1-3 on subsequent runs)
+# Pre-generate the simulation bundle
 python scripts/generate_sim_bundle.py --paths 1000 --steps 17520
 
-# Quick dev bundle (200 paths, 5 days)
+# Quick dev bundle
 python scripts/generate_sim_bundle.py --paths 200 --steps 240
 
 # Run sanity tests
 pytest tests/test_sanity.py -v
 
-# Streamlit dashboard (reads cached JSON/parquet outputs)
+# Streamlit dashboard
 streamlit run streamlit_app.py
 ```
 
 ---
 
-## Project structure
+## Project Structure
 
-```
+```text
 bess_project/
-├── notebooks/bess_valuation_full.ipynb   ← single end-to-end notebook
-├── src/
-│   ├── processes/
-│   │   ├── schwartz_smith.py             ← Kalman filter calibration
-│   │   ├── hpfc.py                       ← PCA hourly shape
-│   │   ├── imbalance.py                  ← OU+jump calibration & simulation
-│   │   ├── ancillary.py                  ← AR(1) + saturation curve
-│   │   └── simulate.py                   ← joint PathBundle generator
-│   ├── optimisation/
-│   │   ├── lsmc.py                       ← LSMC backward induction + forward pass
-│   │   ├── rolling_intrinsic.py          ← LP benchmark
-│   │   └── dual_bound.py                 ← Andersen-Broadie upper bound
-│   ├── valuation/
-│   │   ├── mtm.py                        ← MTM aggregation + contract overlays
-│   │   ├── greeks.py                     ← bump-and-revalue Greek engine
-│   │   └── var_cvar.py                   ← VaR / CVaR / scenario stress
-│   └── attribution/
-│       └── pnl_explain.py                ← daily P&L decomposition
-├── tests/
-│   └── test_sanity.py                    ← Test A (price sim) + Test C (MTM signs)
-├── data/
-│   ├── raw/                              ← parquet files from APIs
-│   └── processed/                        ← calibration JSON + simulation bundle
-└── docs/
-    ├── stochastic_plan.md                ← 10-phase methodology
-    └── pricing_items.md                  ← full revenue stack description
+|-- notebooks/
+|   |-- bess_valuation_full.ipynb
+|   |-- 01_data_pipeline.ipynb
+|   |-- 02_calibration.ipynb
+|   |-- 03_simulation.ipynb
+|   |-- 04_lsmc_valuation.ipynb
+|   `-- 06_backtest_pnl.ipynb
+|-- src/
+|   |-- processes/
+|   |-- optimisation/
+|   |-- valuation/
+|   `-- attribution/
+|-- tests/
+|-- data/
+|   |-- raw/
+|   `-- processed/
+|-- docs/
+|-- scripts/
+|-- streamlit_app.py
+`-- README.md
 ```
 
 ---
 
-## Known issues
+## Known Issues
 
 | # | Issue | Impact | Status |
-|---|---|---|---|
-| 1 | **Synthetic forward curve** (9 contracts, not real ICE/EEX) | SS σ_χ=2.0 is 2–10× too large; σ_ξ is too small; mean-reversion half-life correct | Data gap |
-| 2 | **NESO API URLs broken** — ancillary n_obs=0 for all products post-2024 | Ancillary AR(1) reverts to hard-coded priors; saturation curve not updated | API change |
-| 3 | **xi_0 not enforced in simulate()** — defaults to 0, giving exp(0)=£1/MWh instead of £76.7 | Phase 3 spot P50 = £1/MWh; LSMC phase sets xi_0 correctly but it's a footgun | Footgun |
-| 4 | **β NaN in backward pass** — some basis function evaluations produce NaN (likely from overflow or rank-deficient regression on early steps) | LSMC policy is partially degenerate; V_LSMC/V_RI ratio of 18× is inflated | Bug |
-| 5 | **Dual bound std = £28B** — oracle is computing identical cashflows for lower and upper path, producing zero variance across dual paths | 0% gap is meaningless; dual bound not validating LSMC quality | Bug |
-| 6 | **Backtest is synthetic** — P&L attribution uses simulated, not real, realised cashflows | Residual 434% vs <5% target is expected; backtest cannot validate execution | Design |
-| 7 | **Intraday spread not simulated** — `P_id` is set to `P_da` throughout; ID premium is zero | All ID revenue opportunity lost; underestimates BESS value | Feature gap |
-| 8 | **Negative prices require arithmetic OU** — 1,032 negative-price half-hours break the log-normal assumption | Spot model clips negative prices upward; tail risk understated | Model gap |
+|---:|---|---|---|
+| 1 | Synthetic forward curve | Schwartz-Smith volatility split is distorted | Data gap |
+| 2 | NESO API resource drift | Ancillary AR(1) reverts to priors | API change |
+| 3 | `xi_0` not enforced in standalone simulation | Phase 3 spot P50 is about GBP 1/MWh | Footgun |
+| 4 | LSMC regression diagnostics need hardening | V_LSMC / V_RI ratio remains inflated | Bug |
+| 5 | Dual bound is degenerate | 0% gap is not a useful validation | Bug |
+| 6 | Backtest still uses synthetic cashflows | Attribution is illustrative, not execution validation | Design |
+| 7 | Intraday spread not simulated | Intraday premium is omitted | Feature gap |
+| 8 | Negative prices require arithmetic treatment | Log-normal model clips negative-price behavior | Model gap |
 
 ---
 
-## Potential improvements
+## Potential Improvements
 
-### High priority (model correctness)
-
-1. **Real forward curve** — pull GB baseload/peak monthly settlements from ICE WebICE or EEX
-   transparency platform and re-calibrate SS. Expected effect: σ_χ drops to 0.2–0.5, σ_ξ rises to 0.05–0.15.
-
-2. **Fix NESO ancillary data** — update resource IDs in `src/data/fetch_neso.py` after the late-2024
-   API reorganisation, or download CSV and convert. Ancillary revenues are the largest source of BESS
-   value in GB (£6–12k/MW/yr DC+DM) and are currently calibrated to stale priors.
-
-3. **Fix β NaN in LSMC backward pass** — add a NaN guard in the regression loop; fall back to
-   the unconditional mean when design matrix is rank-deficient. This will also normalise the
-   V_LSMC/V_RI ratio to a plausible 3–8×.
-
-4. **Enforce xi_0 in simulate()** — either accept `forward_anchor` as a required parameter
-   or set `xi_0 = log(forward_anchor)` by default, so the footgun cannot fire silently.
-
-### Medium priority (model completeness)
-
-5. **Intraday price simulation** — add an arithmetic OU spread `P_id − P_da` to the PathBundle.
-   GB intraday has mean spread ≈ £2–5/MWh with intraday momentum; a fast battery cycles this 2–4×/day.
-
-6. **Negative price regime** — switch baseload simulation from log-normal SS to an arithmetic
-   two-factor model (Lucia & Schwartz 2002 variant), or add a floor absorbing state at £0 to
-   preserve log-normal convenience where prices are positive.
-
-7. **Meaningful dual bound** — debug the oracle cashflow computation so that upper-bound paths
-   genuinely relax the non-anticipativity constraint; target gap < 2% (Nadarajah et al. 2017).
-
-8. **Real backtest** — connect `pnl_explain.py` to actual Elexon BOA / BMRS dispatch outturn
-   data for a BMU registered to the asset, then re-run the 30-day P&L attribution.
-
-### Lower priority (calibration & infrastructure)
-
-9. **Regime-switching for ancillary saturation** — fit a time-varying γ or a two-regime model
-   (pre/post 6 GW fleet) rather than a single exponent, to better capture the DCL price collapse.
-
-10. **Multi-year simulation efficiency** — the 3-year path chaining proof-of-concept uses a fresh
-    simulate call per year; a single long-horizon simulation would preserve state correlations across
-    augmentation events.
-
-11. **Capacity Market forward curve** — current CM revenue is a flat £1,051/MW/yr proxy.
-    Replace with the actual T-4 and T-1 clearing prices for the relevant delivery years and apply
-    the correct derated capacity factor.
-
-12. **Parallel Greek engine** — bump-and-revalue currently runs Greeks sequentially; parallelise
-    across factors to bring runtime from ~15 min to ~2 min for the full 15-Greek ladder.
+1. Pull real GB baseload/peak monthly settlements from ICE WebICE or EEX and
+   recalibrate Schwartz-Smith.
+2. Update NESO ancillary data resource IDs or ingest CSV exports.
+3. Add NaN and rank-deficiency guards in the LSMC regression loop.
+4. Require a forward anchor or default `xi_0 = log(forward_anchor)` in simulation.
+5. Add an arithmetic OU intraday spread process.
+6. Add a negative-price regime or switch baseload to an arithmetic two-factor model.
+7. Debug the Andersen-Broadie oracle path calculation and target a dual gap below 2%.
+8. Connect P&L attribution to real BMU dispatch and cashflow data.
+9. Fit a regime-switching ancillary saturation curve.
+10. Replace year-by-year chaining with a single long-horizon simulation.
+11. Replace flat Capacity Market revenue with delivery-year clearing prices.
+12. Parallelise bump-and-revalue Greeks.
 
 ---
 
-## Data sources
+## Data Sources
 
 | Source | What to pull | API / access |
 |---|---|---|
-| Elexon BMRS | DA MID prices, system prices, NIV, BOA | `api.elexon.co.uk` — no credentials |
-| NESO Data Portal | EAC clearing (DC/DM/DR/QR/BR) | `api.nationalgrideso.com` — resource IDs drift |
-| ICE / EEX | GB baseload + peak monthly forwards | ICE WebICE export or EEX transparency |
+| Elexon BMRS | DA MID prices, system prices, NIV, BOA | `api.elexon.co.uk` |
+| NESO Data Portal | EAC clearing for DC/DM/DR/QR/BR | `api.nationalgrideso.com` |
+| ICE / EEX | GB baseload and peak monthly forwards | ICE WebICE export or EEX transparency |
 | Modo Energy | ME BESS GB Revenue Index | Subscription |
 | Aurora / Baringa | Battery revenue forecasts | Subscription |
 
@@ -244,9 +267,9 @@ bess_project/
 
 ## References
 
-- Boogert & de Jong (2008) — LSMC for gas storage, *J. Derivatives* 15(3)
-- Schwartz & Smith (2000) — two-factor commodity model, *Management Science* 46
-- Lucia & Schwartz (2002) — electricity seasonality
-- Nadarajah, Margot & Secomandi (2017) — LSMC dual bounds, *EJOR* 256
-- Finnah, Gönsch & Ziel (2022) — GB imbalance modelling, *EJOR* 301
-- Shi, Xu & Baldick (2019) — convex cycle-based degradation cost, *IEEE T-SG*
+- Boogert & de Jong (2008), LSMC for gas storage, *Journal of Derivatives* 15(3)
+- Schwartz & Smith (2000), two-factor commodity model, *Management Science* 46
+- Lucia & Schwartz (2002), electricity seasonality
+- Nadarajah, Margot & Secomandi (2017), LSMC dual bounds, *EJOR* 256
+- Finnah, Goensch & Ziel (2022), GB imbalance modelling, *EJOR* 301
+- Shi, Xu & Baldick (2019), convex cycle-based degradation cost, *IEEE T-SG*
