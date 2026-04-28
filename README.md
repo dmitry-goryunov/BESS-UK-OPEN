@@ -262,19 +262,41 @@ bess_project/
 
 ## Potential Improvements
 
-1. Pull real GB baseload/peak monthly settlements from ICE WebICE or EEX and
-   recalibrate Schwartz-Smith.
-2. Update NESO ancillary data resource IDs or ingest CSV exports.
-3. Add NaN and rank-deficiency guards in the LSMC regression loop.
-4. Require a forward anchor or default `xi_0 = log(forward_anchor)` in simulation.
-5. Add an arithmetic OU intraday spread process.
-6. Add a negative-price regime or switch baseload to an arithmetic two-factor model.
-7. Debug the Andersen-Broadie oracle path calculation and target a dual gap below 2%.
-8. Connect P&L attribution to real BMU dispatch and cashflow data.
-9. Fit a regime-switching ancillary saturation curve.
-10. Replace year-by-year chaining with a single long-horizon simulation.
-11. Replace flat Capacity Market revenue with delivery-year clearing prices.
-12. Parallelise bump-and-revalue Greeks.
+1. Replace the synthetic forward curve with historical ICE/EEX forward panels
+   containing multiple `as_of_date`s and short maturities: front month, quarter,
+   season, and year.
+2. Anchor Phase 3 simulation by default with
+   `xi_0 = log(forward_anchor_gbp_mwh)` so standalone simulations do not start
+   near `exp(0) = GBP 1/MWh`.
+3. Add a historical spot-derived baseload fallback, clearly labelled as a spot
+   proxy rather than a risk-neutral forward calibration.
+4. Model negative day-ahead prices directly with an arithmetic two-factor model,
+   shifted lognormal process, or explicit negative-price regime.
+5. Recheck imbalance-process unit scaling between calibration and simulation,
+   especially `theta_delta`, jump intensity, and half-hour/day conversions.
+6. Promote the historical perfect-foresight benchmark in the phase workflow and
+   compare LSMC, rolling intrinsic, DA perfect foresight, and SP perfect foresight
+   side by side.
+7. Add a combined market optimiser where DA, imbalance/system price, and
+   ancillary decisions share one physical battery dispatch constraint.
+8. Update NESO ancillary data ingestion by refreshing resource IDs or supporting
+   manual CSV uploads for DC/DM/DR/QR/BR clearing prices.
+9. Add an intraday market spread process or historical intraday benchmark.
+10. Harden LSMC diagnostics for regression rank deficiency, extreme beta
+    coefficients, continuation-value monotonicity, action distributions, and
+    out-of-sample forward stability.
+11. Rework the dual-bound oracle so the information-relaxation bound is a
+    meaningful upper bound rather than a degenerate 0% gap.
+12. Keep large generated artefacts out of Git where possible; commit code and
+    small summaries, and publish heavy plots/parquet outputs via releases or
+    external storage.
+13. Replace flat Capacity Market revenue with delivery-year clearing prices and
+    derating-specific assumptions.
+14. Fit a regime-switching ancillary saturation curve rather than one static
+    exponent.
+15. Replace year-by-year chaining with a single long-horizon simulation for
+    lifecycle MTM.
+16. Parallelise bump-and-revalue Greeks and cache shared simulation inputs.
 
 ---
 
