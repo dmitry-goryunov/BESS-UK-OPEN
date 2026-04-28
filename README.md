@@ -23,6 +23,7 @@ policy forward to produce an MTM distribution.
 | 4 - LSMC | `src/optimisation/lsmc.py` | Regression coefficients, dispatch policy, MTM distribution |
 | 5 - MTM / Greeks / VaR | `src/valuation/` | Lifetime MTM, Greek ladder, VaR/CVaR, scenario stresses |
 | 6 - Backtest | `src/attribution/` | Dual bound gap, 30-day P&L attribution |
+| 7 - Historical benchmark | `src/optimisation/perfect_foresight.py` | Full-horizon perfect-foresight DA/SP arbitrage benchmark |
 
 Everything runs end-to-end in `notebooks/bess_valuation_full.ipynb`.
 
@@ -150,15 +151,34 @@ bound. The backtest residual improved materially versus the earlier synthetic
 run, but still narrowly misses the target flag because the implementation checks
 a strict fractional threshold.
 
+### Phase 7 - Historical Perfect-Foresight Benchmark
+
+This is a deterministic upper benchmark for a 100 MW / 200 MWh 2h battery with
+88% RTE, 10-90% SoC limits, VOM, and terminal SoC returned to the initial level.
+It solves one LP over the full historical price path, so it is not a tradable
+strategy.
+
+| Market price series | Total value | GBP/MW/yr | Equivalent cycles |
+|---|---:|---:|---:|
+| Day-ahead | GBP 7.47M | GBP 36.1k | 1,063 |
+| System price | GBP 22.03M | GBP 106.5k | 2,215 |
+
+The DA and SP benchmarks are **not additive**. They are two alternative
+perfect-foresight valuations using the same physical battery over the same
+2.068-year historical horizon.
+
 ### Published Artifacts
 
 | Artifact | Path |
 |---|---|
 | End-to-end notebook | `notebooks/bess_valuation_full.ipynb` |
+| Phase notebooks | `notebooks/01_data_pipeline.ipynb` ... `notebooks/07_historical_perfect_foresight.ipynb` |
 | LSMC valuation chart | `data/processed/lsmc_valuation.png` |
 | LSMC summary | `data/processed/lsmc_valuation_summary.json` |
 | MTM / Greeks / VaR summary | `data/processed/mtm_summary.json` |
 | Dual bound / backtest summary | `data/processed/phase6_summary.json` |
+| Perfect-foresight summary | `data/processed/perfect_foresight_summary.json` |
+| Perfect-foresight dispatch | `data/processed/perfect_foresight_da_dispatch.parquet`, `data/processed/perfect_foresight_sp_dispatch.parquet` |
 | Notebook output charts | `notebooks/mtm_components.png`, `notebooks/mtm_distribution.png`, `notebooks/greek_ladder.png`, `notebooks/var_cvar.png`, `notebooks/scenario_stress.png`, `notebooks/dual_bound.png`, `notebooks/pnl_attribution.png` |
 
 ---
@@ -181,6 +201,9 @@ python scripts/generate_sim_bundle.py --paths 1000 --steps 17520
 # Quick dev bundle
 python scripts/generate_sim_bundle.py --paths 200 --steps 240
 
+# Historical perfect-foresight benchmark
+python notebooks/run_historical_perfect_foresight.py
+
 # Run sanity tests
 pytest tests/test_sanity.py -v
 
@@ -200,7 +223,10 @@ bess_project/
 |   |-- 02_calibration.ipynb
 |   |-- 03_simulation.ipynb
 |   |-- 04_lsmc_valuation.ipynb
-|   `-- 06_backtest_pnl.ipynb
+|   |-- 05_mtm_risk_greeks.ipynb
+|   |-- 06_backtest_pnl.ipynb
+|   |-- 07_historical_perfect_foresight.ipynb
+|   `-- run_historical_perfect_foresight.py
 |-- src/
 |   |-- processes/
 |   |-- optimisation/
@@ -230,6 +256,7 @@ bess_project/
 | 6 | Backtest still uses synthetic cashflows | Attribution is illustrative, not execution validation | Design |
 | 7 | Intraday spread not simulated | Intraday premium is omitted | Feature gap |
 | 8 | Negative prices require arithmetic treatment | Log-normal model clips negative-price behavior | Model gap |
+| 9 | Perfect foresight is an upper benchmark | It assumes complete future price knowledge | Interpretation |
 
 ---
 

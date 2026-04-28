@@ -17,6 +17,6 @@
   "ri_mean_gbp": 170985,
   "lsmc_ri_ratio": 17.702,
   "v_lsmc_gte_v_ri": true,
-  "bwd_time_s": 42.6,
-  "fwd_time_s": 21.3
+  "bwd_time_s": 42.3,
+  "fwd_time_s": 20.5
 }

@@ -1,7 +1,7 @@
 {
   "dual_bound": {
-    "v_lsmc": 64471.03191063337,
-    "v_dual": 64471.03191063337,
+    "v_lsmc": 72819.78680352232,
+    "v_dual": 72819.78680352232,
     "gap_pct": 0.0,
     "dual_ok": true
   },
@@ -9,14 +9,14 @@
     "n_periods": 30,
     "total_delta_mtm": 201769.44969265908,
     "total_theta": -366902.68960690126,
-    "total_delta_explain": -289607.8863106722,
+    "total_delta_explain": -287323.9105719147,
     "total_exec_surprise": -24382.991874087165,
     "total_deg_surprise": -2456.393982293027,
     "total_calib_effect": 0.0,
-    "total_residual": 885119.4114666128,
-    "residual_pct_total": 4.3867860710075375,
-    "mean_daily_residual_pct": 1.0911934886854084,
-    "p95_daily_residual_pct": 2.0619869780155446,
+    "total_residual": 882835.4357278553,
+    "residual_pct_total": 4.375466340779614,
+    "mean_daily_residual_pct": 1.0893265696966998,
+    "p95_daily_residual_pct": 2.054082780552064,
     "pass_residual_target": false,
     "target_residual_pct": 0.05
   },

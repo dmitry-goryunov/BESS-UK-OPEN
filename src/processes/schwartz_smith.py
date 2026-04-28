@@ -39,6 +39,7 @@ class SSParams:
     sigma_chi:  float
     sigma_xi:   float
     rho:        float
+    sigma_obs:  float = float('nan')
     log_likelihood: float = float('nan')
     n_obs:          int   = 0
 
@@ -126,7 +127,12 @@ def calibrate(log_forwards, taus, dt=1/52, init_params=None, n_restarts=5, seed=
     dt           : observation step in years (default 1/52 = weekly)
     """
     rng = np.random.default_rng(seed)
-    bounds = [(0.01,20),(-.5,.5),(0.01,2),(0.01,1),(-.99,.99),(0.001,0.20)]
+    # kappa: (0.01,20), mu_xi: (-.5,.5), sigma_chi: (0.01,1.5), sigma_xi: (0.005,1),
+    # rho: (-.99,.99), sigma_obs: (0.001,0.50)
+    # sigma_chi capped at 1.5 (annualised ~150% short-factor vol); the old ceiling of 3.5
+    # caused the filter to hit the bound when short maturities (<6m) are absent from the
+    # panel, because B_chi(tau)=exp(-kappa*tau)~0 for tau>1yr makes chi unidentifiable.
+    bounds = [(0.01,20),(-.5,.5),(0.01,1.5),(0.005,1),(-.99,.99),(0.001,0.50)]
 
     def objective(params):
         return _ss_kalman_filter(log_forwards, taus, dt, *params)
@@ -146,9 +152,20 @@ def calibrate(log_forwards, taus, dt=1/52, init_params=None, n_restarts=5, seed=
         if res.fun < best_ll:
             best_ll, best_res = res.fun, res
 
-    kappa, mu_xi, sigma_chi, sigma_xi, rho, _ = best_res.x
+    kappa, mu_xi, sigma_chi, sigma_xi, rho, sigma_obs = best_res.x
+    param_names = ['kappa', 'mu_xi', 'sigma_chi', 'sigma_xi', 'rho', 'sigma_obs']
+    for name, val, (lo, hi) in zip(param_names, best_res.x, bounds):
+        tol = 0.01 * (hi - lo)
+        if val <= lo + tol or val >= hi - tol:
+            import warnings
+            warnings.warn(
+                f"[SS] {name}={val:.4f} is within 1% of its bound [{lo}, {hi}] — "
+                "parameter may be unidentified; consider adding shorter maturities.",
+                stacklevel=2,
+            )
     return SSParams(kappa=kappa, mu_xi=mu_xi, sigma_chi=sigma_chi,
                     sigma_xi=sigma_xi, rho=rho,
+                    sigma_obs=sigma_obs,
                     log_likelihood=-best_ll,
                     n_obs=int(np.isfinite(log_forwards).sum()))
 

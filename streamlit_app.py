@@ -165,6 +165,7 @@ tabs = st.tabs(
         "Phase 4 LSMC",
         "Phase 5 MTM Risk",
         "Phase 6 Backtest",
+        "Perfect Foresight",
     ]
 )
 
@@ -505,3 +506,85 @@ with tabs[5]:
         "dual_bound.png",
     ]:
         show_optional_image(fig_name)
+
+with tabs[6]:
+    st.header("Historical Perfect-Foresight Benchmark")
+    pf_summary = read_optional_json("perfect_foresight_summary.json")
+    if pf_summary:
+        results = pf_summary.get("results", {})
+        da_pf = results.get("DA", {})
+        sp_pf = results.get("SP", {})
+
+        c1, c2, c3, c4 = st.columns(4)
+        with c1:
+            metric_card("DA value", format_gbp(da_pf.get("value_gbp")))
+        with c2:
+            metric_card("DA GBP/MW/yr", format_gbp(da_pf.get("value_gbp_per_mw_year"), decimals=1))
+        with c3:
+            metric_card("SP value", format_gbp(sp_pf.get("value_gbp")))
+        with c4:
+            metric_card("SP GBP/MW/yr", format_gbp(sp_pf.get("value_gbp_per_mw_year"), decimals=1))
+
+        st.caption(
+            "DA and SP are alternative perfect-foresight benchmarks, not additive. "
+            "Each uses the same physical battery capacity over the same historical horizon."
+        )
+
+        st.subheader("Benchmark Summary")
+        rows = []
+        for market, values in results.items():
+            row = {"market": market}
+            row.update(values)
+            rows.append(row)
+        if rows:
+            display_cols = [
+                "market",
+                "start_date",
+                "end_date",
+                "horizon_years",
+                "price_min_gbp_mwh",
+                "price_mean_gbp_mwh",
+                "price_max_gbp_mwh",
+                "value_gbp",
+                "value_gbp_per_mw",
+                "value_gbp_per_mw_year",
+                "equivalent_cycles",
+                "mean_daily_gbp",
+            ]
+            table = pd.DataFrame(rows)
+            st.dataframe(
+                table[[col for col in display_cols if col in table.columns]],
+                hide_index=True,
+                use_container_width=True,
+            )
+
+        st.subheader("Dispatch Files")
+        file_rows = []
+        for name in [
+            "perfect_foresight_da_dispatch.parquet",
+            "perfect_foresight_sp_dispatch.parquet",
+            "perfect_foresight_summary.json",
+        ]:
+            path = PROCESSED_DIR / name
+            file_rows.append(
+                {
+                    "file": str(path.relative_to(ROOT)),
+                    "exists": path.exists(),
+                    "size_kb": round(path.stat().st_size / 1024, 1) if path.exists() else None,
+                }
+            )
+        st.dataframe(pd.DataFrame(file_rows), hide_index=True, use_container_width=True)
+
+        with st.expander("Raw perfect-foresight JSON"):
+            st.json(pf_summary, expanded=False)
+    else:
+        st.info(
+            "No perfect-foresight summary found. Run "
+            "`python notebooks/run_historical_perfect_foresight.py` or "
+            "`notebooks/07_historical_perfect_foresight.ipynb`."
+        )
+
+    show_optional_image(
+        "perfect_foresight_da_high_value_week.png",
+        "Perfect-foresight DA dispatch for the highest-value week",
+    )
