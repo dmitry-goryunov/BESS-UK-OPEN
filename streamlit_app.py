@@ -140,18 +140,24 @@ def lsmc_metrics(summary: dict[str, Any]) -> None:
 
 
 def component_rows(values: dict[str, Any]) -> pd.DataFrame:
-    keys = [
-        "merchant",
-        "toll",
-        "floor_contracted",
-        "cm",
-        "floor_optionality",
-        "optimiser_fee",
-        "opex_fixed",
-        "augmentation",
-        "total_mean",
-    ]
-    return pd.DataFrame([{"component": key, "GBP/MW/year": values[key]} for key in keys if key in values])
+    labels = {
+        "merchant": "merchant",
+        "toll": "toll",
+        "floor_contracted": "floor contracted",
+        "cm": "capacity market",
+        "floor_optionality": "floor optionality",
+        "optimiser_fee": "optimiser fee, 12% negotiated",
+        "opex_fixed": "fixed O&M",
+        "augmentation": "augmentation",
+        "total_mean": "total mean",
+    }
+    return pd.DataFrame(
+        [
+            {"component": labels[key], "GBP/MW/year": values[key]}
+            for key in labels
+            if key in values
+        ]
+    )
 
 
 st.title("BESS UK Valuation Outputs")

@@ -41,4 +41,5 @@ data/processed/
 These outputs are research artifacts. Phase 4-6 are saved from the current
 fast-development partial mode rather than a final production solve. The
 perfect-foresight benchmark is an upper benchmark and is not a tradable
-strategy.
+strategy. The Phase 5 optimiser fee is shown as an assumed 12% negotiated
+share of gross positive merchant revenue.
