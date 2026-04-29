@@ -6,6 +6,8 @@ from pathlib import Path
 import pandas as pd
 import streamlit as st
 
+from src.model_status import build_model_status
+
 
 ROOT = Path(__file__).resolve().parent
 RAW_DIR = ROOT / "data" / "raw"
@@ -159,6 +161,7 @@ if "delivery_start" in df_fwd.columns:
 
 tabs = st.tabs(
     [
+        "Model Status",
         "Phase 1 Data",
         "Phase 2 Calibration",
         "Phase 3 Simulation",
@@ -170,6 +173,13 @@ tabs = st.tabs(
 )
 
 with tabs[0]:
+    st.header("Model Status")
+    st.caption("Interpretation layer for cached artifacts: calibrated, prior-driven, stale, or benchmark-only.")
+    status_rows = build_model_status(PROCESSED_DIR)
+    st.dataframe(pd.DataFrame(status_rows), hide_index=True, use_container_width=True)
+
+
+with tabs[1]:
     st.header("Phase 1: Data Pipeline")
     c1, c2, c3, c4 = st.columns(4)
     with c1:
@@ -227,7 +237,7 @@ with tabs[0]:
     }
     st.dataframe(sample_map[sample_choice].head(200), use_container_width=True)
 
-with tabs[1]:
+with tabs[2]:
     st.header("Phase 2: Model Calibration")
     ss = read_optional_json("ss_params.json")
     pca = read_optional_json("pca_params.json")
@@ -259,7 +269,7 @@ with tabs[1]:
     else:
         st.info("No ancillary parameter file found.")
 
-with tabs[2]:
+with tabs[3]:
     st.header("Phase 3: Joint Path Simulation")
     summary = read_optional_json("sim_summary.json")
     if summary:
@@ -297,7 +307,7 @@ with tabs[2]:
     ]:
         show_optional_image(fig_name)
 
-with tabs[3]:
+with tabs[4]:
     st.header("Phase 4: LSMC Valuation")
     lsmc_summary = read_optional_json("lsmc_valuation_summary.json")
     if lsmc_summary:
@@ -335,7 +345,7 @@ with tabs[3]:
 
     show_optional_image("lsmc_valuation.png", "Phase 4 LSMC valuation diagnostics")
 
-with tabs[4]:
+with tabs[5]:
     st.header("Phase 5: MTM, Greeks, VaR and Stress")
     mtm_summary = read_optional_json("mtm_summary.json")
     if mtm_summary:
@@ -446,7 +456,7 @@ with tabs[4]:
             with column:
                 show_optional_image(fig_name, caption)
 
-with tabs[5]:
+with tabs[6]:
     st.header("Phase 6: Backtest and P&L Attribution")
     phase6 = read_optional_json("phase6_summary.json")
     if phase6:
@@ -507,7 +517,7 @@ with tabs[5]:
     ]:
         show_optional_image(fig_name)
 
-with tabs[6]:
+with tabs[7]:
     st.header("Historical Perfect-Foresight Benchmark")
     pf_summary = read_optional_json("perfect_foresight_summary.json")
     if pf_summary:

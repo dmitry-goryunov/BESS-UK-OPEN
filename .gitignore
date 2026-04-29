@@ -12,3 +12,5 @@ venv/
 *.log
 
 data/processed/sim_bundle*.pkl
+data/processed/lsmc_policy*.pkl
+data/processed/lsmc_valuation_result*.pkl

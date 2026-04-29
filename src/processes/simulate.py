@@ -196,6 +196,7 @@ def simulate(
     delta_0:     Optional[np.ndarray] = None,
     pi_0:        Optional[Dict[str, np.ndarray]] = None,
     dtype:       type = np.float32,
+    allow_unanchored: bool = False,
 ) -> PathBundle:
     """
     Simulate joint half-hourly paths for all state variables.
@@ -211,11 +212,15 @@ def simulate(
     dt           : timestep in years (default 1/(365*48))
     seed         : RNG seed
     corr_matrix  : (6,6) joint correlation override (uses JOINT_CORR if None)
-    chi_0, xi_0  : initial SS states, shape (n_paths,); zero if None
+    chi_0, xi_0  : initial SS states, shape (n_paths,)
+                  xi_0 is required unless allow_unanchored=True
     lam_0        : initial HPFC factor levels, shape (n_paths, K); zero if None
     delta_0      : initial imbalance basis, shape (n_paths,); zero if None
     pi_0         : initial ancillary prices per product; uses mu if None
     dtype        : storage dtype (float32 recommended to save memory)
+    allow_unanchored
+                 : when True, permit xi_0=None and start prices near exp(0).
+                   This is useful for process tests only, not valuation.
 
     Returns
     -------
@@ -231,6 +236,13 @@ def simulate(
     K = hpfc_params.n_factors
     N = n_paths
     T = n_steps
+
+    if xi_0 is None and not allow_unanchored:
+        raise ValueError(
+            "simulate() requires xi_0 to anchor the initial price level. "
+            "Pass xi_0=np.full(n_paths, np.log(forward_anchor_gbp_mwh)) "
+            "or set allow_unanchored=True for process-only tests."
+        )
 
     # ------------------------------------------------------------------
     # Allocate output arrays (float32 to save memory)
@@ -439,8 +451,8 @@ def default_params_from_config():
 
     Important: the returned SSParams has mu_xi=0 and no embedded price level.
     Callers must pass xi_0=np.full(n_paths, np.log(forward_anchor)) to simulate()
+    simulate() fails loudly without xi_0 unless allow_unanchored=True is passed.
     so that exp(chi+xi) starts near the forward anchor (£76.7/MWh by default).
-    Without xi_0, prices start at exp(0)=£1/MWh.
     """
     from src.config import (SCHWARTZ_SMITH as SS_CFG, PCA_SHAPE,
                              IMBALANCE as IMB_CFG, ANCILLARY as ANC_CFG)

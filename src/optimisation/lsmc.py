@@ -33,7 +33,8 @@ Longstaff & Schwartz (2001) Rev. Fin. Studies 14(1)
 from __future__ import annotations
 
 import os
-from concurrent.futures import ThreadPoolExecutor, as_completed
+import time
+from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
 
 import numpy as np
 from dataclasses import dataclass, field
@@ -44,6 +45,12 @@ from src.optimisation.dispatch import (
     next_soc_grid, feasibility_mask,
 )
 from src.processes.simulate import PathBundle
+from src.validation import (
+    validate_asset_config,
+    validate_path_bundle,
+    validate_policy,
+    validate_valuation_result,
+)
 
 
 # ---------------------------------------------------------------------------
@@ -134,6 +141,7 @@ class Policy:
     dt_h:       float
     n_steps:    int
     n_paths:    int
+    diagnostics: Dict[str, float] = field(default_factory=dict)
 
 
 @dataclass
@@ -149,6 +157,7 @@ class ValuationResult:
     mtm_p5:         float
     mtm_p95:        float
     efc_total:      float         # equivalent full cycles consumed
+    action_diagnostics: Dict[str, object] = field(default_factory=dict)
 
 
 # ---------------------------------------------------------------------------
@@ -177,6 +186,7 @@ class LSMCSolver:
         fin_cfg:    dict,
         modes:      Optional[List[DispatchMode]] = None,
         verbose:    bool = True,
+        hpfc_params = None,
     ) -> None:
         self.asset   = asset_cfg
         self.lsmc    = lsmc_cfg
@@ -184,6 +194,7 @@ class LSMCSolver:
         self.fin     = fin_cfg
         self.modes   = modes if modes is not None else DEFAULT_MODES
         self.verbose = verbose
+        self.hpfc_params = hpfc_params
 
         # Derived constants
         self.P_bar    = float(asset_cfg['power_mw'])
@@ -216,6 +227,12 @@ class LSMCSolver:
         self.deg_cost = float(deg_cfg.get('lambda_deg_init_gbp_mwh', 6.0))
         self.vom      = float(asset_cfg.get('vom_gbp_mwh', 1.2))
         self.ridge_alpha = float(lsmc_cfg.get('ridge_alpha', 1e-3))
+        self.continuation_cap = float(
+            lsmc_cfg.get(
+                'continuation_value_cap_gbp',
+                max(10_000_000.0, self.P_bar * 250_000.0),
+            )
+        )
 
         # Pre-stack mode fractions as arrays (M,) for vectorised dispatch
         self._net_fracs = np.array([m.net_frac  for m in self.modes], np.float32)
@@ -242,6 +259,37 @@ class LSMCSolver:
                     float(E_j) + dE, E_min_k, E_max_k,
                 ).astype(np.float32)
         self._E_next_jkm = E_next_jkm   # (n_soc, n_soh, M)
+
+    def _intraday_spread_matrix(self, bundle: PathBundle, P_da_all: np.ndarray) -> np.ndarray:
+        """
+        Build a peak-minus-trough intraday spread proxy for the LSMC basis.
+
+        If calibrated HPFC parameters are not supplied, fall back to the default
+        config loadings. This keeps the basis feature active while preserving
+        backward-compatible caller signatures.
+        """
+        hpfc = self.hpfc_params
+        if hpfc is None:
+            try:
+                from src.processes.simulate import default_params_from_config
+                hpfc = default_params_from_config()[1]
+            except Exception:
+                return np.zeros_like(P_da_all, dtype=np.float32)
+
+        loadings = np.asarray(getattr(hpfc, "loadings", []), dtype=np.float32)
+        if loadings.ndim != 2 or bundle.lam.shape[2] < loadings.shape[0]:
+            return np.zeros_like(P_da_all, dtype=np.float32)
+
+        peak_hh = int(self.lsmc.get("intraday_peak_hh", 34))
+        trough_hh = int(self.lsmc.get("intraday_trough_hh", 14))
+        peak_hh = int(np.clip(peak_hh, 0, loadings.shape[1] - 1))
+        trough_hh = int(np.clip(trough_hh, 0, loadings.shape[1] - 1))
+
+        k = min(bundle.lam.shape[2], loadings.shape[0])
+        loading_diff = loadings[:k, peak_hh] - loadings[:k, trough_hh]
+        log_spread = np.tensordot(bundle.lam[:, :, :k], loading_diff, axes=([2], [0]))
+        spread = P_da_all * np.expm1(np.clip(log_spread, -2.0, 2.0))
+        return np.clip(spread, -200.0, 200.0).astype(np.float32)
 
     # ------------------------------------------------------------------
     # Backward induction
@@ -277,6 +325,26 @@ class LSMCSolver:
 
         # Coefficient store
         beta = np.zeros((T, J, K, N_BASIS), dtype=np.float32)
+        diagnostics = {
+            "regression_count": 0,
+            "nonfinite_beta_count": 0,
+            "beta_abs_max": 0.0,
+            "target_std_min": float("inf"),
+            "target_std_max": 0.0,
+            "sampled_regression_count": 0,
+            "sample_rank_deficient_count": 0,
+            "sample_condition_max": 0.0,
+            "active_feature_count_min": float("inf"),
+            "active_feature_count_max": 0,
+            "fallback_lstsq_count": 0,
+            "fallback_zero_count": 0,
+            "continuation_clip_fraction_max": 0.0,
+            "continuation_clip_observation_count": 0,
+            "continuation_clip_observation_total": 0,
+            "continuation_clip_regression_count": 0,
+            "continuation_value_cap_gbp": float(self.continuation_cap),
+            "intraday_spread_std": 0.0,
+        }
 
         # Continuation value store: V[j, k, n] = Ê[V_{t+1}(E_j, SoH_k, S_n)]
         # Updated at each backward step and then used at t-1.
@@ -291,7 +359,8 @@ class LSMCSolver:
 
         # Intraday spread proxy: use lambda_1 loading on peak vs trough HH
         # If HPFC params aren't passed, approximate as zero
-        P_id_spr_all = np.zeros_like(P_da_all)   # (N, T+1) — todo: fill from hpfc
+        P_id_spr_all = self._intraday_spread_matrix(bundle, P_da_all)
+        diagnostics["intraday_spread_std"] = float(np.std(P_id_spr_all[:, :T]))
 
         # Pre-compute next-SoC table: E_next[j, m] — (J, M)
         # For each SoC node and each mode, deterministic E' (before SoH scaling)
@@ -308,6 +377,8 @@ class LSMCSolver:
         # (seen as ±1e27 betas), yet small relative to typical PhiT_Phi diagonals
         # of ~N*feature_scale² ≈ 250, so regression accuracy is barely affected.
         reg = self.ridge_alpha
+        diag_stride = int(self.lsmc.get("diagnostics_stride", 500))
+        diag_stride = max(1, diag_stride)
 
         # Backward loop
         for t in range(T - 1, -1, -1):
@@ -323,6 +394,7 @@ class LSMCSolver:
 
             t_hh      = t % 48
             efa_block = int(self._efa[t_hh])
+            V_curr = np.zeros_like(V_next)
 
             # Cashflow matrix — same for all SoC nodes (CF doesn't depend on E)
             # CF: (N, M)
@@ -375,35 +447,115 @@ class LSMCSolver:
                     # equations producing explosive coefficients.
                     Phi64 = Phi.astype(np.float64)
                     Y64 = Y.astype(np.float64)
+                    y_std = float(np.std(Y64))
+                    diagnostics["regression_count"] += 1
+                    diagnostics["target_std_min"] = min(diagnostics["target_std_min"], y_std)
+                    diagnostics["target_std_max"] = max(diagnostics["target_std_max"], y_std)
                     mu = Phi64.mean(axis=0)
-                    sd = Phi64.std(axis=0)
+                    raw_sd = Phi64.std(axis=0)
+                    # Within one regression E, hour trig terms, and EFA block
+                    # can be constant by construction. Drop those columns from
+                    # the fitted system and let the intercept absorb them.
+                    active = np.ones(N_BASIS, dtype=bool)
+                    active[1:] = raw_sd[1:] > 1e-8
+                    active_count = int(np.sum(active))
+                    diagnostics["active_feature_count_min"] = min(
+                        diagnostics["active_feature_count_min"], active_count
+                    )
+                    diagnostics["active_feature_count_max"] = max(
+                        diagnostics["active_feature_count_max"], active_count
+                    )
+                    sd = raw_sd.copy()
                     mu[0] = 0.0
                     sd[0] = 1.0
                     sd = np.where(sd > 1e-8, sd, 1.0)
-                    Z = (Phi64 - mu) / sd
+                    Z = (Phi64[:, active] - mu[active]) / sd[active]
 
-                    ridge = reg * np.eye(N_BASIS)
+                    ridge = reg * np.eye(active_count)
                     ridge[0, 0] = 0.0
                     PhiT_Phi = Z.T @ Z + ridge
                     PhiT_Y = Z.T @ Y64
+                    do_sample_diag = (diagnostics["regression_count"] % diag_stride) == 0
+                    if do_sample_diag:
+                        diagnostics["sampled_regression_count"] += 1
+                        rank = int(np.linalg.matrix_rank(Z))
+                        if rank < active_count:
+                            diagnostics["sample_rank_deficient_count"] += 1
+                        cond = float(np.linalg.cond(PhiT_Phi))
+                        if np.isfinite(cond):
+                            diagnostics["sample_condition_max"] = max(
+                                diagnostics["sample_condition_max"], cond
+                            )
                     try:
-                        gamma = np.linalg.solve(PhiT_Phi, PhiT_Y)
-                        if not np.all(np.isfinite(gamma)):
-                            gamma, _, _, _ = np.linalg.lstsq(PhiT_Phi, PhiT_Y, rcond=None)
+                        gamma_active = np.linalg.solve(PhiT_Phi, PhiT_Y)
+                        if not np.all(np.isfinite(gamma_active)):
+                            diagnostics["fallback_lstsq_count"] += 1
+                            gamma_active, _, _, _ = np.linalg.lstsq(PhiT_Phi, PhiT_Y, rcond=None)
                     except np.linalg.LinAlgError:
-                        gamma = np.zeros(N_BASIS)
+                        diagnostics["fallback_zero_count"] += 1
+                        gamma_active = np.zeros(active_count)
 
-                    b = gamma / sd
+                    gamma = np.zeros(N_BASIS, dtype=np.float64)
+                    gamma[active] = gamma_active
+                    b = np.zeros(N_BASIS, dtype=np.float64)
+                    b[active] = gamma_active / sd[active]
                     b[0] = gamma[0] - np.sum(gamma[1:] * mu[1:] / sd[1:])
+                    if not np.all(np.isfinite(b)):
+                        diagnostics["nonfinite_beta_count"] += 1
+                    beta_abs_max = float(np.nanmax(np.abs(b))) if b.size else 0.0
+                    if np.isfinite(beta_abs_max):
+                        diagnostics["beta_abs_max"] = max(diagnostics["beta_abs_max"], beta_abs_max)
                     beta[t, j, k_idx, :] = np.where(
                         np.isfinite(b), b, 0.0
                     ).astype(np.float32)
 
                     # Update V_next at this node for the NEXT backward step (t-1)
-                    V_next[j, k_idx, :] = np.clip(Phi @ b, -1e8, 1e8).astype(np.float32)
+                    raw_cont = Phi @ b
+                    clip_mask = (
+                        (raw_cont < -self.continuation_cap)
+                        | (raw_cont > self.continuation_cap)
+                    )
+                    clip_count = int(np.sum(clip_mask))
+                    clip_frac = float(clip_count / max(len(raw_cont), 1))
+                    diagnostics["continuation_clip_observation_count"] += clip_count
+                    diagnostics["continuation_clip_observation_total"] += int(len(raw_cont))
+                    if clip_count:
+                        diagnostics["continuation_clip_regression_count"] += 1
+                    diagnostics["continuation_clip_fraction_max"] = max(
+                        diagnostics["continuation_clip_fraction_max"], clip_frac
+                    )
+                    V_curr[j, k_idx, :] = np.clip(
+                        raw_cont,
+                        -self.continuation_cap,
+                        self.continuation_cap,
+                    ).astype(np.float32)
+
+            V_next = V_curr
 
         if self.verbose:
             print(f"\n  Backward pass complete. beta shape: {beta.shape}")
+            print(
+                "  LSMC diagnostics: "
+                f"beta_abs_max={diagnostics['beta_abs_max']:.3g}, "
+                f"sample_cond_max={diagnostics['sample_condition_max']:.3g}, "
+                f"rank_def={int(diagnostics['sample_rank_deficient_count'])}/"
+                f"{int(diagnostics['sampled_regression_count'])}"
+            )
+
+        if diagnostics["target_std_min"] == float("inf"):
+            diagnostics["target_std_min"] = 0.0
+        if diagnostics["active_feature_count_min"] == float("inf"):
+            diagnostics["active_feature_count_min"] = 0
+        clip_total = int(diagnostics.get("continuation_clip_observation_total", 0))
+        clip_count = int(diagnostics.get("continuation_clip_observation_count", 0))
+        reg_count = int(diagnostics.get("regression_count", 0))
+        clip_reg_count = int(diagnostics.get("continuation_clip_regression_count", 0))
+        diagnostics["continuation_clip_observation_fraction"] = (
+            float(clip_count / clip_total) if clip_total else 0.0
+        )
+        diagnostics["continuation_clip_regression_fraction"] = (
+            float(clip_reg_count / reg_count) if reg_count else 0.0
+        )
 
         return Policy(
             beta      = beta,
@@ -413,6 +565,7 @@ class LSMCSolver:
             dt_h      = self.dt_h,
             n_steps   = T,
             n_paths   = N,
+            diagnostics = diagnostics,
         )
 
     def _interp_V(
@@ -500,6 +653,7 @@ class LSMCSolver:
         delta_all = np.clip(bundle.delta_imb, -500.0, 500.0).astype(np.float32)
         pi_dc_all = np.clip(bundle.pi['DC_Low'], 0.0, 100.0).astype(np.float32)
         pi_qr_all = np.clip(bundle.pi.get('QR_Pos', bundle.pi['DC_Low']), 0.0, 100.0).astype(np.float32)
+        P_id_spr_all = self._intraday_spread_matrix(bundle, P_da_all)
 
         # SoH fade rate per HH step
         # Simplified: linear SoH degradation at cycle_rate EFCs/year
@@ -512,6 +666,14 @@ class LSMCSolver:
 
         net_fracs = self._net_fracs   # (M,)
         M = len(self.modes)
+        action_counts = np.zeros(M, dtype=np.int64)
+        action_cf_sum = np.zeros(M, dtype=np.float64)
+        action_cont_sum = np.zeros(M, dtype=np.float64)
+        action_q_sum = np.zeros(M, dtype=np.float64)
+        q_gap_sum = 0.0
+        q_gap_count = 0
+        q_gap_small_count = 0
+        q_gap_min = float("inf")
 
         if self.verbose:
             print(f"LSMC forward:  T={T}, N={N}")
@@ -546,57 +708,56 @@ class LSMCSolver:
 
             # 4. Continuation value — fully vectorised, no Python loop over j/k/m.
             #
-            # Basis decomposition (see BASIS_NAMES):
-            #   features 0-7  (const, P, P^2, P^3, P_id, delta, dc, qr)  — no E
-            #   features 8-10 (E, E^2, E×P)                              — E-dependent
-            #   features 11-13 (sin, cos, efa)                            — no E
-            #
-            # cont[n,m] = phi_base[n] @ b_base[n]        (E-independent part)
-            #           + b[8,n] * E_scaled[n,m]
-            #           + b[9,n] * E_scaled[n,m]^2
-            #           + b[10,n] * P_c[n] * E_scaled[n,m]
-
-            # Build E-independent basis (N, 11) once per time-step
-            P_c   = np.clip(P_da, -100.0, 500.0).astype(np.float32) / 100.0
-            dlt_c = np.clip(delta, -500.0, 500.0).astype(np.float32) / 100.0
-            dc_c  = np.clip(pi_dc, 0.0, 100.0).astype(np.float32)   / 20.0
-            qr_c  = np.clip(pi_qr, 0.0, 100.0).astype(np.float32)   / 20.0
-            sin_h = np.float32(np.sin(2 * np.pi * (t_hh / 2.0) / 24))
-            cos_h = np.float32(np.cos(2 * np.pi * (t_hh / 2.0) / 24))
-
-            phi_base = np.empty((N, 11), dtype=np.float32)
-            phi_base[:, 0]  = 1.0
-            phi_base[:, 1]  = P_c
-            phi_base[:, 2]  = P_c ** 2
-            phi_base[:, 3]  = P_c ** 3
-            phi_base[:, 4]  = 0.0          # P_id spread — placeholder (always 0)
-            phi_base[:, 5]  = dlt_c
-            phi_base[:, 6]  = dc_c
-            phi_base[:, 7]  = qr_c
-            phi_base[:, 8]  = sin_h
-            phi_base[:, 9]  = cos_h
-            phi_base[:, 10] = float(efa_block)
-
-            # Gather beta for each path's (j, k) node: (N, 14)
-            b_n = policy.beta[t, j_arr, k_arr, :]   # (N, 14)
-
-            # b_base: columns 0-7 and 11-13 of beta → (N, 11)
-            b_base_n = np.concatenate([b_n[:, :8], b_n[:, 11:14]], axis=1)
-
-            # E-independent continuation: (N,)
-            base_cont = (phi_base * b_base_n).sum(axis=1)
-
-            # E-dependent: look up pre-computed next-SoC for each path × mode
+            # For action t, compare CF_t + discount * V_{t+1}(E_next, S_{t+1}).
+            # The terminal step has zero continuation. Earlier versions used
+            # beta[t] at the current SoC node, which can hallucinate large
+            # same-time continuation values in forward policy evaluation.
             E_next_nm = self._E_next_jkm[j_arr, k_arr, :]   # (N, M)
-            E_sc_nm   = (E_next_nm / 100.0).astype(np.float32)   # (N, M)
+            if t + 1 >= T:
+                cont = np.zeros((N, M), dtype=np.float32)
+            else:
+                t_next = t + 1
+                t_next_hh = t_next % 48
+                efa_next = int(self._efa[t_next_hh])
+                P_next = P_da_all[:, t_next]
+                P_c_next = np.clip(P_next, -100.0, 500.0).astype(np.float32) / 100.0
+                dlt_c_next = np.clip(delta_all[:, t_next], -500.0, 500.0).astype(np.float32) / 100.0
+                dc_c_next = np.clip(pi_dc_all[:, t_next], 0.0, 100.0).astype(np.float32) / 20.0
+                qr_c_next = np.clip(pi_qr_all[:, t_next], 0.0, 100.0).astype(np.float32) / 20.0
+                p_id_c_next = np.clip(P_id_spr_all[:, t_next], -200.0, 200.0).astype(np.float32) / 100.0
+                sin_next = np.float32(np.sin(2 * np.pi * (t_next_hh / 2.0) / 24))
+                cos_next = np.float32(np.cos(2 * np.pi * (t_next_hh / 2.0) / 24))
 
-            cont = np.clip(
-                base_cont[:, None]
-                + b_n[:, 8:9]  * E_sc_nm
-                + b_n[:, 9:10] * E_sc_nm ** 2
-                + (b_n[:, 10] * P_c)[:, None] * E_sc_nm,
-                -1e8, 1e8,
-            ).astype(np.float32)   # (N, M)
+                phi_next_base = np.empty((N, 11), dtype=np.float32)
+                phi_next_base[:, 0] = 1.0
+                phi_next_base[:, 1] = P_c_next
+                phi_next_base[:, 2] = P_c_next ** 2
+                phi_next_base[:, 3] = P_c_next ** 3
+                phi_next_base[:, 4] = p_id_c_next
+                phi_next_base[:, 5] = dlt_c_next
+                phi_next_base[:, 6] = dc_c_next
+                phi_next_base[:, 7] = qr_c_next
+                phi_next_base[:, 8] = sin_next
+                phi_next_base[:, 9] = cos_next
+                phi_next_base[:, 10] = float(efa_next)
+
+                j_next_nm = np.clip(
+                    np.searchsorted(self.soc_grid, E_next_nm, side='right') - 1,
+                    0,
+                    self.n_soc - 1,
+                )
+                k_next_nm = np.broadcast_to(k_arr[:, None], (N, M))
+                b_nm = policy.beta[t_next, j_next_nm, k_next_nm, :]   # (N, M, 14)
+                b_base_nm = np.concatenate([b_nm[:, :, :8], b_nm[:, :, 11:14]], axis=2)
+                E_sc_nm = (E_next_nm / 100.0).astype(np.float32)
+                cont = np.clip(
+                    np.sum(phi_next_base[:, None, :] * b_base_nm, axis=2)
+                    + b_nm[:, :, 8] * E_sc_nm
+                    + b_nm[:, :, 9] * E_sc_nm ** 2
+                    + b_nm[:, :, 10] * P_c_next[:, None] * E_sc_nm,
+                    -self.continuation_cap,
+                    self.continuation_cap,
+                ).astype(np.float32)
 
             # Feasibility mask: (N, M)
             E_min_const = np.float32(self.E_min_fr * self.E_name)
@@ -636,6 +797,23 @@ class LSMCSolver:
 
             # Cashflow at chosen mode
             cf_n = CF[np.arange(N), m_star]   # (N,)
+            cont_n = cont[np.arange(N), m_star]
+            q_n = Q[np.arange(N), m_star]
+            if M > 1:
+                top2 = np.partition(Q, -2, axis=1)[:, -2:]
+                runner_up_q = top2[:, 0]
+                valid_gap = runner_up_q > -1e8
+                if np.any(valid_gap):
+                    q_gap = q_n[valid_gap] - runner_up_q[valid_gap]
+                    q_gap_sum += float(np.sum(q_gap))
+                    q_gap_count += int(q_gap.size)
+                    q_gap_small_count += int(np.sum(q_gap <= 1.0))
+                    q_gap_min = min(q_gap_min, float(np.min(q_gap)))
+
+            action_counts += np.bincount(m_star, minlength=M)
+            action_cf_sum += np.bincount(m_star, weights=cf_n, minlength=M)
+            action_cont_sum += np.bincount(m_star, weights=cont_n, minlength=M)
+            action_q_sum += np.bincount(m_star, weights=q_n, minlength=M)
 
             # Store
             cf_store[:, t]      = cf_n
@@ -649,6 +827,36 @@ class LSMCSolver:
 
         if self.verbose:
             print(f"  Forward pass complete. MTM P50 = £{np.median(pv_paths):,.0f}")
+
+        total_decisions = int(action_counts.sum())
+        action_diagnostics = {
+            "total_decisions": total_decisions,
+            "selected_cashflow_mean_gbp": float(action_cf_sum.sum() / total_decisions) if total_decisions else 0.0,
+            "selected_continuation_mean_gbp": float(action_cont_sum.sum() / total_decisions) if total_decisions else 0.0,
+            "selected_q_mean_gbp": float(action_q_sum.sum() / total_decisions) if total_decisions else 0.0,
+            "selected_q_gap_mean_gbp": float(q_gap_sum / q_gap_count) if q_gap_count else None,
+            "selected_q_gap_min_gbp": float(q_gap_min) if np.isfinite(q_gap_min) else None,
+            "selected_q_gap_le_1gbp_fraction": float(q_gap_small_count / q_gap_count) if q_gap_count else None,
+            "by_mode": [
+                {
+                    "index": int(i),
+                    "net_frac": float(self.modes[i].net_frac),
+                    "r_dc_frac": float(self.modes[i].r_dc_frac),
+                    "r_qr_frac": float(self.modes[i].r_qr_frac),
+                    "count": int(action_counts[i]),
+                    "selected_cashflow_mean_gbp": (
+                        float(action_cf_sum[i] / action_counts[i]) if action_counts[i] else None
+                    ),
+                    "selected_continuation_mean_gbp": (
+                        float(action_cont_sum[i] / action_counts[i]) if action_counts[i] else None
+                    ),
+                    "selected_q_mean_gbp": (
+                        float(action_q_sum[i] / action_counts[i]) if action_counts[i] else None
+                    ),
+                }
+                for i in range(M)
+            ],
+        }
 
         return ValuationResult(
             pv_paths       = pv_paths,
@@ -664,6 +872,7 @@ class LSMCSolver:
                 np.sum(np.maximum(-np.diff(soc_store, axis=1), 0.0), axis=1)
                 / max(self.E_name, 1.0)
             )),
+            action_diagnostics = action_diagnostics,
         )
 
     def forward_parallel(
@@ -716,13 +925,27 @@ class LSMCSolver:
         try:
             with ThreadPoolExecutor(max_workers=max_workers) as executor:
                 futures = [executor.submit(run_chunk, i, chunk) for i, chunk in enumerate(chunks)]
+                pending = set(futures)
                 done = 0
-                for future in as_completed(futures):
-                    pos, res = future.result()
-                    results[pos] = res
-                    done += 1
+                t0 = time.time()
+                heartbeat_s = 10.0
+                while pending:
+                    finished, pending = wait(
+                        pending,
+                        timeout=heartbeat_s if old_verbose else None,
+                        return_when=FIRST_COMPLETED,
+                    )
+                    for future in finished:
+                        pos, res = future.result()
+                        results[pos] = res
+                        done += 1
                     if old_verbose:
-                        print(f"  Forward chunks complete {done}/{len(chunks)} ...", end="\r")
+                        elapsed = time.time() - t0
+                        print(
+                            f"  Forward chunks complete {done}/{len(chunks)} "
+                            f"after {elapsed:.0f}s ...",
+                            flush=True,
+                        )
         finally:
             self.verbose = old_verbose
 
@@ -762,6 +985,7 @@ def run_lsmc(
     modes:        Optional[List[DispatchMode]] = None,
     verbose:      bool = True,
     fwd_bundle:   Optional[PathBundle] = None,
+    hpfc_params = None,
 ) -> Tuple[Policy, ValuationResult]:
     """
     Run full LSMC: backward induction then forward simulation.
@@ -775,8 +999,24 @@ def run_lsmc(
     -------
     (policy, result)
     """
-    solver = LSMCSolver(asset_cfg, lsmc_cfg, deg_cfg, fin_cfg, modes, verbose)
+    if lsmc_cfg.get("run_validation", True):
+        asset_check = validate_asset_config(asset_cfg)
+        asset_check.raise_if_failed()
+        bundle_check = validate_path_bundle(bundle, require_anchor=False)
+        bundle_check.raise_if_failed()
+        if fwd_bundle is not None:
+            fwd_check = validate_path_bundle(fwd_bundle, require_anchor=False)
+            fwd_check.raise_if_failed()
+
+    solver = LSMCSolver(asset_cfg, lsmc_cfg, deg_cfg, fin_cfg, modes, verbose, hpfc_params=hpfc_params)
     policy = solver.backward(bundle)
     fwd    = fwd_bundle if fwd_bundle is not None else bundle
     result = solver.forward(fwd, policy)
+
+    if lsmc_cfg.get("run_validation", True):
+        policy_check = validate_policy(policy)
+        policy_check.raise_if_failed()
+        result_check = validate_valuation_result(result, asset_cfg)
+        result_check.raise_if_failed()
+
     return policy, result

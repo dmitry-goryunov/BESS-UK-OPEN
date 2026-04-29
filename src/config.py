@@ -188,6 +188,7 @@ LSMC = {
     "basis_include_soc_price_cross": True,
     "basis_include_hour_trig":       True,
     "basis_include_efa_block":       True,
+    "continuation_value_cap_gbp": 25_000_000,
     "dual_gap_acceptable": 0.02,
     "dual_gap_refine":     0.05,
     "run_rolling_intrinsic": True,

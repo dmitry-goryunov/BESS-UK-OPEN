@@ -23,20 +23,16 @@ import numpy as np
 import pandas as pd
 
 
-def find_project_root(start: Path | None = None) -> Path:
-    start = Path.cwd() if start is None else start.resolve()
-    for candidate in [start, *start.parents]:
-        if (candidate / "src").is_dir() and (candidate / "data").is_dir():
-            return candidate
-    raise RuntimeError("Could not find project root containing src/ and data/.")
-
-
-PROJECT_ROOT = find_project_root()
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 from src.config import ASSET  # noqa: E402
 from src.optimisation.perfect_foresight import solve_perfect_foresight  # noqa: E402
+from src.utils import find_project_root  # noqa: E402
+
+
+PROJECT_ROOT = find_project_root(PROJECT_ROOT)
 
 
 RAW = PROJECT_ROOT / "data" / "raw"

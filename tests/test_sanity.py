@@ -10,6 +10,7 @@ Run from the project root:
 
 import sys
 import os
+import json
 
 import numpy as np
 import pytest
@@ -19,10 +20,20 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from src.processes.simulate import simulate, default_params_from_config
 from src.processes.imbalance import ImbalanceParams
+from src.optimisation.dispatch import DEFAULT_MODES
 from src.optimisation.lsmc import run_lsmc
 from src.optimisation.dual_bound import compute_dual_bound
 from src.valuation.mtm import aggregate_mtm
 from src.config import ASSET, LSMC as LSMC_CFG, DEGRADATION, FINANCE, SCHWARTZ_SMITH
+from src.model_status import build_model_status
+from src.utils import find_project_root
+from src.validation import (
+    summarize_action_distribution,
+    validate_asset_config,
+    validate_path_bundle,
+    validate_policy,
+    validate_valuation_result,
+)
 
 
 # ---------------------------------------------------------------------------
@@ -142,6 +153,107 @@ class TestPriceSimulation:
         expected = 10.0 + 0.5 * (50.0 - 10.0)
         assert np.allclose(bundle.delta_imb[:, 1], expected, atol=1e-6)
 
+    def test_path_bundle_validation_passes_for_anchored_bundle(self, small_bundle):
+        result = validate_path_bundle(
+            small_bundle,
+            forward_anchor_gbp_mwh=SCHWARTZ_SMITH["forward_anchor_gbp_mwh"],
+        )
+        assert result.ok, result.summary()
+
+    def test_path_bundle_validation_catches_missing_xi_anchor(self):
+        ss, hpfc, imb, anc = default_params_from_config()
+        bundle = simulate(
+            ss,
+            hpfc,
+            imb,
+            anc,
+            n_paths=10,
+            n_steps=4,
+            seed=99,
+            allow_unanchored=True,
+        )
+        result = validate_path_bundle(
+            bundle,
+            forward_anchor_gbp_mwh=SCHWARTZ_SMITH["forward_anchor_gbp_mwh"],
+        )
+        assert not result.ok
+        assert any("xi_0" in err for err in result.errors)
+
+    def test_simulate_requires_xi_anchor_by_default(self):
+        ss, hpfc, imb, anc = default_params_from_config()
+        with pytest.raises(ValueError, match="requires xi_0"):
+            simulate(ss, hpfc, imb, anc, n_paths=10, n_steps=4, seed=99)
+
+
+class TestValidationHelpers:
+    """Validation helpers should catch bad configs and inspect LSMC outputs."""
+
+    def test_asset_config_validation_passes_for_default_asset(self):
+        result = validate_asset_config(ASSET)
+        assert result.ok, result.summary()
+
+    def test_asset_config_validation_catches_bad_soc_bounds(self):
+        bad = dict(ASSET)
+        bad["soc_min_frac"] = 0.95
+        bad["soc_max_frac"] = 0.10
+        result = validate_asset_config(bad)
+        assert not result.ok
+        assert any("SoC bounds" in err for err in result.errors)
+
+    def test_policy_and_valuation_validation_pass(self, small_lsmc_result):
+        policy, val_result = small_lsmc_result
+        policy_check = validate_policy(policy)
+        valuation_check = validate_valuation_result(val_result, ASSET)
+        assert policy_check.ok, policy_check.summary()
+        assert valuation_check.ok, valuation_check.summary()
+        assert policy.diagnostics["regression_count"] > 0
+        assert policy.diagnostics["intraday_spread_std"] > 0.0
+        assert policy.diagnostics["active_feature_count_min"] >= 1
+        assert policy.diagnostics["active_feature_count_max"] < len(policy.beta[0, 0, 0])
+        assert policy.diagnostics["continuation_clip_fraction_max"] == 0.0
+        assert valuation_check.metrics["unique_action_count"] > 1
+        assert valuation_check.metrics["dominant_action_fraction"] < 0.98
+        action_diag = val_result.action_diagnostics
+        assert action_diag["total_decisions"] == int(val_result.action_paths.size)
+        assert np.isfinite(action_diag["selected_cashflow_mean_gbp"])
+        assert np.isfinite(action_diag["selected_continuation_mean_gbp"])
+        assert np.isfinite(action_diag["selected_q_mean_gbp"])
+        assert len(action_diag["by_mode"]) == len(policy.modes)
+
+    def test_valuation_validation_flags_degenerate_actions(self, small_lsmc_result):
+        _, val_result = small_lsmc_result
+        degenerate = type("DegenerateValuation", (), {})()
+        degenerate.pv_paths = val_result.pv_paths
+        degenerate.cashflow_paths = val_result.cashflow_paths
+        degenerate.soc_paths = val_result.soc_paths
+        degenerate.soh_paths = val_result.soh_paths
+        degenerate.action_paths = np.zeros_like(val_result.action_paths)
+
+        result = validate_valuation_result(degenerate, ASSET)
+
+        assert result.ok, result.summary()
+        assert result.metrics["unique_action_count"] == 1
+        assert any("only one action" in warning for warning in result.warnings)
+
+    def test_action_distribution_summary_counts_modes_and_net_buckets(self, small_lsmc_result):
+        _, val_result = small_lsmc_result
+        summary = summarize_action_distribution(
+            val_result.action_paths,
+            DEFAULT_MODES,
+            val_result.cashflow_paths,
+        )
+
+        assert summary["total_decisions"] == int(val_result.action_paths.size)
+        assert summary["mode_count"] == len(DEFAULT_MODES)
+        assert summary["unique_action_count"] > 1
+        assert 0.0 < summary["dominant_action_fraction"] < 0.98
+        assert summary["charge_fraction"] > 0.0
+        assert summary["discharge_fraction"] > 0.0
+        assert summary["cashflow_mean_gbp"] is not None
+        assert any(item["cashflow_mean_gbp"] is not None for item in summary["by_mode"])
+        assert sum(item["count"] for item in summary["by_mode"]) == summary["total_decisions"]
+        assert sum(item["count"] for item in summary["by_net_frac"].values()) == summary["total_decisions"]
+
 
 # ---------------------------------------------------------------------------
 # Test C — MTM component signs
@@ -227,3 +339,200 @@ class TestInformationRelaxationBenchmark:
         assert np.isfinite(result.gap_pct)
         if result.gap_abs < 0:
             assert not result.dual_ok
+
+
+class TestProjectUtilities:
+    """Shared utility helpers should work from nested project paths."""
+
+    def test_find_project_root_from_notebooks_dir(self):
+        root = find_project_root(os.path.join(os.path.dirname(__file__), "..", "notebooks"))
+        assert (root / "src").is_dir()
+        assert (root / "data").is_dir()
+
+
+class TestModelStatus:
+    """Model status summary should surface the major interpretation caveats."""
+
+    def test_build_model_status_flags_prior_driven_and_benchmark_outputs(self, tmp_path):
+        def write_json(name, data):
+            (tmp_path / name).write_text(json.dumps(data), encoding="utf-8")
+
+        write_json("ss_params.json", {"sigma_obs": 0.001, "n_obs": 936})
+        write_json(
+            "ancillary_params.json",
+            {"products": {"DC_Low": {"n_obs": 0}, "QR_Pos": {"n_obs": 0}}},
+        )
+        write_json(
+            "sim_summary.json",
+            {
+                "spot_price_gbp_mwh": {"p50": 76.5},
+                "validation": {"chi_variance": True, "xi_mean": True},
+            },
+        )
+        write_json(
+            "lsmc_valuation_summary.json",
+            {
+                "lsmc_diagnostics": {
+                    "continuation_clip_fraction_max": 0.724,
+                    "sample_rank_deficient_count": 10,
+                    "sampled_regression_count": 10,
+                }
+            },
+        )
+        write_json(
+            "phase6_summary.json",
+            {
+                "dual_bound": {"gap_pct": 4.12, "dual_ok": False},
+                "backtest": {"residual_pct_total": 0.38, "pass_residual_target": False},
+            },
+        )
+        write_json("perfect_foresight_summary.json", {"results": {"DA": {}, "SP": {}}})
+
+        rows = build_model_status(tmp_path)
+        by_area = {row["area"]: row for row in rows}
+
+        assert by_area["Schwartz-Smith calibration"]["status"] == "synthetic/prior-driven"
+        assert by_area["Ancillary calibration"]["status"] == "prior-driven"
+        assert by_area["Simulation"]["status"] == "passes sanity checks"
+        assert by_area["LSMC valuation"]["status"] == "diagnostic warning"
+        assert by_area["Upper benchmark"]["status"] == "benchmark-only"
+        assert by_area["Backtest attribution"]["status"] == "fails target"
+        assert by_area["Perfect foresight"]["status"] == "benchmark-only"
+
+    def test_build_model_status_flags_lsmc_below_rolling_intrinsic(self, tmp_path):
+        def write_json(name, data):
+            (tmp_path / name).write_text(json.dumps(data), encoding="utf-8")
+
+        write_json(
+            "lsmc_valuation_summary.json",
+            {
+                "mtm_gbp": {"mean": 71},
+                "ri_mean_gbp": 170985,
+                "lsmc_ri_ratio": 0.0,
+                "v_lsmc_gte_v_ri": False,
+                "lsmc_diagnostics": {
+                    "continuation_clip_fraction_max": 0.0,
+                    "sample_rank_deficient_count": 0,
+                    "sampled_regression_count": 10,
+                    "beta_abs_max": 1.0e6,
+                },
+            },
+        )
+
+        rows = build_model_status(tmp_path)
+        by_area = {row["area"]: row for row in rows}
+
+        assert by_area["LSMC valuation"]["status"] == "coherence warning"
+        assert "V_LSMC/V_RI=0.00x" in by_area["LSMC valuation"]["evidence"]
+        assert "partial mode" in by_area["LSMC valuation"]["next_action"]
+
+    def test_build_model_status_flags_high_lsmc_ri_ratio(self, tmp_path):
+        def write_json(name, data):
+            (tmp_path / name).write_text(json.dumps(data), encoding="utf-8")
+
+        write_json(
+            "lsmc_valuation_summary.json",
+            {
+                "mtm_gbp": {"mean": 124760},
+                "ri_mean_gbp": 7772,
+                "lsmc_ri_ratio": 16.052,
+                "v_lsmc_gte_v_ri": True,
+                "action_distribution": {
+                    "unique_action_count": 4,
+                    "dominant_action_fraction": 0.70,
+                    "charge_fraction": 0.20,
+                    "discharge_fraction": 0.20,
+                },
+                "action_q_diagnostics": {
+                    "selected_cashflow_mean_gbp": 520.0,
+                    "selected_continuation_mean_gbp": 123627.0,
+                    "selected_q_gap_mean_gbp": 251.0,
+                },
+                "lsmc_diagnostics": {
+                    "continuation_clip_fraction_max": 0.0,
+                    "sample_rank_deficient_count": 0,
+                    "sampled_regression_count": 10,
+                    "beta_abs_max": 1.0e6,
+                },
+            },
+        )
+
+        rows = build_model_status(tmp_path)
+        by_area = {row["area"]: row for row in rows}
+
+        assert by_area["LSMC valuation"]["status"] == "benchmark warning"
+        assert "V_LSMC/V_RI=16.05x" in by_area["LSMC valuation"]["evidence"]
+
+    def test_build_model_status_flags_one_sided_dispatch(self, tmp_path):
+        def write_json(name, data):
+            (tmp_path / name).write_text(json.dumps(data), encoding="utf-8")
+
+        write_json(
+            "lsmc_valuation_summary.json",
+            {
+                "mtm_gbp": {"mean": 100000},
+                "ri_mean_gbp": 50000,
+                "lsmc_ri_ratio": 2.0,
+                "v_lsmc_gte_v_ri": True,
+                "action_distribution": {
+                    "unique_action_count": 4,
+                    "dominant_action_fraction": 0.70,
+                    "charge_fraction": 1.0,
+                    "discharge_fraction": 0.0,
+                },
+                "action_q_diagnostics": {
+                    "selected_cashflow_mean_gbp": 50.0,
+                    "selected_continuation_mean_gbp": 2000.0,
+                    "selected_q_gap_mean_gbp": 100.0,
+                },
+                "lsmc_diagnostics": {
+                    "continuation_clip_fraction_max": 0.0,
+                    "sample_rank_deficient_count": 0,
+                    "sampled_regression_count": 10,
+                    "beta_abs_max": 1.0e6,
+                },
+            },
+        )
+
+        rows = build_model_status(tmp_path)
+        by_area = {row["area"]: row for row in rows}
+
+        assert by_area["LSMC dispatch"]["status"] == "dispatch warning"
+        assert "discharge=0.0%" in by_area["LSMC dispatch"]["evidence"]
+
+    def test_build_model_status_flags_continuation_scale_warning(self, tmp_path):
+        def write_json(name, data):
+            (tmp_path / name).write_text(json.dumps(data), encoding="utf-8")
+
+        write_json(
+            "lsmc_valuation_summary.json",
+            {
+                "mtm_gbp": {"mean": 100000},
+                "ri_mean_gbp": 50000,
+                "lsmc_ri_ratio": 2.0,
+                "v_lsmc_gte_v_ri": True,
+                "action_distribution": {
+                    "unique_action_count": 4,
+                    "dominant_action_fraction": 0.70,
+                    "charge_fraction": 0.20,
+                    "discharge_fraction": 0.20,
+                },
+                "action_q_diagnostics": {
+                    "selected_cashflow_mean_gbp": 0.31,
+                    "selected_continuation_mean_gbp": 3058139.0,
+                    "selected_q_gap_mean_gbp": 85891.0,
+                },
+                "lsmc_diagnostics": {
+                    "continuation_clip_fraction_max": 0.0,
+                    "sample_rank_deficient_count": 0,
+                    "sampled_regression_count": 10,
+                    "beta_abs_max": 1.0e6,
+                },
+            },
+        )
+
+        rows = build_model_status(tmp_path)
+        by_area = {row["area"]: row for row in rows}
+
+        assert by_area["LSMC Q-values"]["status"] == "continuation warning"
+        assert "selected continuation=GBP 3,058,139" in by_area["LSMC Q-values"]["evidence"]
