@@ -51,13 +51,21 @@ def optional_df(name: str) -> pd.DataFrame:
     return load_parquet(path, path.stat().st_mtime_ns)
 
 
+def formatted_number(value: Any) -> str:
+    if not isinstance(value, (int, float)):
+        return "-"
+    if isinstance(value, float) and not value.is_integer():
+        return f"{value:,.2f}"
+    return f"{value:,.0f}"
+
+
 def money(value: Any, decimals: int = 1) -> str:
     if not isinstance(value, (int, float)):
         return "-"
-    return f"GBP {value:,.0f}"
+    return f"GBP {formatted_number(value)}"
 
 
-def pct(value: Any, decimals: int = 1, fraction: bool = False) -> str:
+def pct(value: Any, decimals: int = 2, fraction: bool = False) -> str:
     if not isinstance(value, (int, float)):
         return "-"
     value = value * 100 if fraction else value
@@ -71,8 +79,8 @@ def metric(label: str, value: Any, help_text: str | None = None) -> None:
 def format_table_value(value: Any) -> Any:
     if isinstance(value, bool) or value is None:
         return value
-    if isinstance(value, (int, float)) and abs(value) >= 1000:
-        return f"{value:,.0f}"
+    if isinstance(value, (int, float)):
+        return formatted_number(value)
     return value
 
 
