@@ -54,13 +54,7 @@ def optional_df(name: str) -> pd.DataFrame:
 def money(value: Any, decimals: int = 1) -> str:
     if not isinstance(value, (int, float)):
         return "-"
-    sign = "-" if value < 0 else ""
-    value = abs(value)
-    if value >= 1_000_000:
-        return f"{sign}GBP {value / 1_000_000:,.{decimals}f}M"
-    if value >= 1_000:
-        return f"{sign}GBP {value / 1_000:,.{decimals}f}k"
-    return f"{sign}GBP {value:,.0f}"
+    return f"GBP {value:,.0f}"
 
 
 def pct(value: Any, decimals: int = 1, fraction: bool = False) -> str:
@@ -72,6 +66,22 @@ def pct(value: Any, decimals: int = 1, fraction: bool = False) -> str:
 
 def metric(label: str, value: Any, help_text: str | None = None) -> None:
     st.metric(label, value, help=help_text)
+
+
+def format_table_value(value: Any) -> Any:
+    if isinstance(value, bool) or value is None:
+        return value
+    if isinstance(value, (int, float)) and abs(value) >= 1000:
+        return f"{value:,.0f}"
+    return value
+
+
+def format_table(df: pd.DataFrame) -> pd.DataFrame:
+    return df.map(format_table_value).astype(str)
+
+
+def show_table(df: pd.DataFrame, hide_index: bool = True) -> None:
+    st.dataframe(format_table(df), hide_index=hide_index, width="stretch")
 
 
 def show_image(name: str, caption: str) -> None:
@@ -88,7 +98,7 @@ def dict_table(data: dict[str, Any], title: str) -> None:
         st.info("No cached output found.")
         return
     rows = [{"metric": key, "value": value} for key, value in data.items() if not isinstance(value, (dict, list))]
-    st.dataframe(pd.DataFrame(rows), hide_index=True, width="stretch")
+    show_table(pd.DataFrame(rows))
 
 
 def output_inventory() -> pd.DataFrame:
@@ -136,7 +146,7 @@ def lsmc_metrics(summary: dict[str, Any]) -> None:
         {"metric": "Backward pass seconds", "value": summary.get("bwd_time_s")},
         {"metric": "Forward pass seconds", "value": summary.get("fwd_time_s")},
     ]
-    st.dataframe(pd.DataFrame(rows), hide_index=True, width="stretch")
+    show_table(pd.DataFrame(rows))
 
 
 def component_rows(values: dict[str, Any]) -> pd.DataFrame:
@@ -169,7 +179,7 @@ if not OUT.exists():
 
 with st.sidebar:
     st.header("Published Files")
-    st.dataframe(output_inventory(), hide_index=True, width="stretch")
+    show_table(output_inventory())
     st.divider()
     st.markdown("Run locally with `streamlit run streamlit_app.py`.")
 
@@ -256,7 +266,7 @@ with tabs[1]:
     anc = optional_json("ancillary_params.json")
     st.subheader("Ancillary Parameters")
     if anc.get("products"):
-        st.dataframe(pd.DataFrame(anc["products"]).T.reset_index(), hide_index=True, width="stretch")
+        show_table(pd.DataFrame(anc["products"]).T.reset_index())
     else:
         st.json(anc, expanded=False)
 
@@ -277,11 +287,11 @@ with tabs[2]:
         dist = simulation_distribution(sim_summary)
         if not dist.empty:
             st.subheader("Terminal Distribution")
-            st.dataframe(dist, hide_index=True, width="stretch")
+            show_table(dist)
 
         if validation:
             st.subheader("Validation Checks")
-            st.dataframe(pd.DataFrame(validation.items(), columns=["check", "passed"]), hide_index=True, width="stretch")
+            show_table(pd.DataFrame(validation.items(), columns=["check", "passed"]))
     else:
         st.info("No simulation summary found.")
 
@@ -321,29 +331,27 @@ with tabs[4]:
             metric("MTM GBP/MW/yr", money(mtm.get("total_mean")))
 
         st.subheader("Components")
-        st.dataframe(component_rows(mtm), hide_index=True, width="stretch")
+        show_table(component_rows(mtm))
 
         st.subheader("Risk Metrics")
-        st.dataframe(
+        show_table(
             pd.DataFrame(
                 [
                     {"confidence": "95%", **risk95},
                     {"confidence": "99%", **risk99},
                 ]
-            ),
-            hide_index=True,
-            width="stretch",
+            )
         )
 
         greeks = mtm_summary.get("greeks", {})
         if greeks:
             st.subheader("Greek Ladder")
-            st.dataframe(pd.DataFrame(greeks).T.reset_index(), hide_index=True, width="stretch")
+            show_table(pd.DataFrame(greeks).T.reset_index())
 
         scenarios = mtm_summary.get("scenarios", {})
         if scenarios:
             st.subheader("Scenario Stress")
-            st.dataframe(pd.DataFrame(scenarios).T.reset_index(), hide_index=True, width="stretch")
+            show_table(pd.DataFrame(scenarios).T.reset_index())
     else:
         st.info("No MTM summary found.")
 
@@ -373,7 +381,7 @@ with tabs[5]:
             metric("Residual target", pct(backtest.get("target_residual_pct"), fraction=True))
 
         st.subheader("Backtest")
-        st.dataframe(pd.DataFrame(backtest.items(), columns=["metric", "value"]), hide_index=True, width="stretch")
+        show_table(pd.DataFrame(backtest.items(), columns=["metric", "value"]))
         with st.expander("Raw Phase 6 summary"):
             st.json(phase6_summary, expanded=False)
     else:
@@ -408,12 +416,12 @@ with tabs[6]:
             with c4:
                 metric("SP GBP/MW/yr", money(sp.get("value_gbp_per_mw_year")))
 
-            st.dataframe(table, hide_index=True, width="stretch")
+            show_table(table)
 
         dispatch = optional_df("perfect_foresight_da_dispatch.parquet")
         if not dispatch.empty:
             st.subheader("DA Dispatch Sample")
-            st.dataframe(dispatch.head(300), width="stretch")
+            show_table(dispatch.head(300), hide_index=False)
     else:
         st.info("No perfect-foresight summary found.")
 
@@ -421,7 +429,7 @@ with tabs[6]:
 
 with tabs[7]:
     st.header("Output Files")
-    st.dataframe(output_inventory(), hide_index=True, width="stretch")
+    show_table(output_inventory())
     st.subheader("Raw JSON Outputs")
     selected = st.selectbox(
         "Summary file",
