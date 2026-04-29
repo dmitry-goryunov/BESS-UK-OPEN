@@ -54,6 +54,10 @@ def optional_df(name: str) -> pd.DataFrame:
 def formatted_number(value: Any) -> str:
     if not isinstance(value, (int, float)):
         return "-"
+    if abs(value) >= 1_000_000:
+        return f"{value / 1_000_000:,.2f} mil"
+    if abs(value) > 100:
+        return f"{value:,.0f}"
     if isinstance(value, float) and not value.is_integer():
         return f"{value:,.2f}"
     return f"{value:,.0f}"
