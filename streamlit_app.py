@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-from copy import deepcopy
 import json
 from pathlib import Path
 from typing import Any
@@ -11,7 +10,6 @@ import streamlit as st
 
 ROOT = Path(__file__).resolve().parent
 OUT = ROOT / "data" / "processed"
-BASE_DURATION_H = 2
 POWER_MW = 100
 
 st.set_page_config(
@@ -47,14 +45,6 @@ def optional_json(name: str) -> dict[str, Any]:
     return load_json(path, path.stat().st_mtime_ns)
 
 
-def optional_json_first(*names: str) -> tuple[dict[str, Any], str | None]:
-    for name in names:
-        data = optional_json(name)
-        if data:
-            return data, name
-    return {}, None
-
-
 def optional_df(name: str) -> pd.DataFrame:
     path = OUT / name
     if not path.exists():
@@ -68,86 +58,6 @@ def duration_label(duration_h: int) -> str:
 
 def duration_file(stem: str, suffix: str, duration_h: int) -> str:
     return f"{stem}_{duration_label(duration_h)}{suffix}"
-
-
-def duration_scale(duration_h: int) -> float:
-    return duration_h / BASE_DURATION_H
-
-
-def duration_adjusted_lsmc(summary: dict[str, Any], duration_h: int) -> dict[str, Any]:
-    adjusted = deepcopy(summary)
-    adjusted["asset_mwh"] = POWER_MW * duration_h
-    adjusted["duration_h"] = duration_h
-    adjusted["duration_basis"] = "loaded valuation output" if duration_h == BASE_DURATION_H else "scaled fallback from loaded valuation output"
-    if duration_h == BASE_DURATION_H:
-        return adjusted
-
-    scale = duration_scale(duration_h)
-    for group in [
-        "mtm_gbp_horizon",
-        "mtm_gbp_annualized",
-        "mtm_gbp_per_mw_horizon",
-        "mtm_gbp_per_mw_year",
-    ]:
-        values = adjusted.get(group, {})
-        if isinstance(values, dict):
-            for key, value in list(values.items()):
-                if isinstance(value, (int, float)):
-                    values[key] = value * scale
-    return adjusted
-
-
-def duration_adjusted_mtm(summary: dict[str, Any], duration_h: int) -> dict[str, Any]:
-    adjusted = deepcopy(summary)
-    mtm = adjusted.get("mtm", {})
-    if not isinstance(mtm, dict):
-        return adjusted
-    mtm["duration_h"] = duration_h
-    mtm["asset_mwh"] = POWER_MW * duration_h
-    mtm["duration_basis"] = "loaded valuation output" if duration_h == BASE_DURATION_H else "energy-sensitive components scaled from loaded valuation"
-    if duration_h == BASE_DURATION_H:
-        return adjusted
-
-    scale = duration_scale(duration_h)
-    for key in ["merchant", "floor_optionality", "optimiser_fee", "augmentation"]:
-        if isinstance(mtm.get(key), (int, float)):
-            mtm[key] *= scale
-
-    component_keys = [
-        "merchant",
-        "toll",
-        "floor_contracted",
-        "cm",
-        "floor_optionality",
-        "optimiser_fee",
-        "opex_fixed",
-        "augmentation",
-    ]
-    total = sum(mtm.get(key, 0.0) for key in component_keys if isinstance(mtm.get(key), (int, float)))
-    mtm["total_mean"] = total
-    for key in ["total_std", "total_p5", "total_p95"]:
-        if isinstance(mtm.get(key), (int, float)):
-            mtm[key] *= scale
-
-    life_years = mtm.get("life_years", 15)
-    for risk_key in ["risk_95", "risk_99"]:
-        risk = adjusted.get(risk_key, {})
-        if not isinstance(risk, dict):
-            continue
-        risk["mean_gbp_per_mw_year"] = total
-        risk["mean_gbp_per_year"] = total * POWER_MW
-        risk["mean_gbp"] = total * POWER_MW * life_years
-        for field in ["std", "var", "cvar", "p5", "p50", "p95"]:
-            per_mw_key = f"{field}_gbp_per_mw_year"
-            per_year_key = f"{field}_gbp_per_year"
-            lifetime_key = f"{field}_gbp"
-            if isinstance(risk.get(per_mw_key), (int, float)):
-                risk[per_mw_key] *= scale
-                risk[per_year_key] = risk[per_mw_key] * POWER_MW
-                risk[lifetime_key] = risk[per_year_key] * life_years
-        risk["duration_h"] = duration_h
-        risk["asset_mwh"] = POWER_MW * duration_h
-    return adjusted
 
 
 def formatted_number(value: Any) -> str:
@@ -203,17 +113,21 @@ def show_image(name: str, caption: str) -> None:
         st.info(f"Missing output: {name}")
 
 
-def show_image_first(names: list[str], caption: str) -> None:
-    for name in names:
-        path = OUT / name
-        if path.exists():
-            st.image(load_image(path, path.stat().st_mtime_ns), caption=f"{caption} ({name})", width="stretch")
-            return
-    st.info(f"Missing output: {names[0]}")
-
-
 def show_duration_image(stem: str, caption: str, duration_h: int) -> None:
-    show_image_first([duration_file(stem, ".png", duration_h), f"{stem}.png"], caption)
+    name = duration_file(stem, ".png", duration_h)
+    path = OUT / name
+    if path.exists():
+        st.image(load_image(path, path.stat().st_mtime_ns), caption=f"{caption} ({name})", width="stretch")
+    else:
+        st.info(f"Not built for {duration_label(duration_h)} yet: {name}")
+
+
+def duration_output_notice(duration_h: int, source: str | None) -> None:
+    if not source:
+        st.info(
+            f"No {duration_label(duration_h)} valuation output has been built yet. "
+            f"Run the notebooks for {duration_label(duration_h)} to generate duration-labelled files."
+        )
 
 
 def dict_table(data: dict[str, Any], title: str) -> None:
@@ -315,27 +229,15 @@ with st.sidebar:
 
 sim_summary = optional_json("sim_summary.json")
 selected_label = duration_label(selected_duration_h)
-lsmc_summary, lsmc_source = optional_json_first(
-    f"lsmc_valuation_summary_{selected_label}.json",
-    "lsmc_valuation_summary.json",
-)
-mtm_summary, mtm_source = optional_json_first(
-    f"mtm_summary_{selected_label}.json",
-    "mtm_summary.json",
-)
-phase6_summary, phase6_source = optional_json_first(
-    f"phase6_summary_{selected_label}.json",
-    "phase6_summary.json",
-)
-pf_summary, pf_source = optional_json_first(
-    f"perfect_foresight_summary_{selected_label}.json",
-    "perfect_foresight_summary.json",
-)
-lsmc_is_labelled = lsmc_source == f"lsmc_valuation_summary_{selected_label}.json"
-mtm_is_labelled = mtm_source == f"mtm_summary_{selected_label}.json"
-lsmc_view = lsmc_summary if lsmc_is_labelled else duration_adjusted_lsmc(lsmc_summary, selected_duration_h)
-mtm_view = mtm_summary if mtm_is_labelled else duration_adjusted_mtm(mtm_summary, selected_duration_h)
-duration_basis = "duration-labelled notebook output" if lsmc_is_labelled or mtm_is_labelled else "scaled fallback from cached output"
+lsmc_source = f"lsmc_valuation_summary_{selected_label}.json"
+mtm_source = f"mtm_summary_{selected_label}.json"
+phase6_source = f"phase6_summary_{selected_label}.json"
+pf_source = f"perfect_foresight_summary_{selected_label}.json"
+lsmc_view = optional_json(lsmc_source)
+mtm_view = optional_json(mtm_source)
+phase6_summary = optional_json(phase6_source)
+pf_summary = optional_json(pf_source)
+duration_basis = "duration-labelled notebook output" if any([lsmc_view, mtm_view, phase6_summary, pf_summary]) else "not built"
 
 tabs = st.tabs(
     [
@@ -352,6 +254,8 @@ tabs = st.tabs(
 
 with tabs[0]:
     st.header("Executive Outputs")
+    if duration_basis == "not built":
+        duration_output_notice(selected_duration_h, None)
     lsmc = lsmc_view.get("mtm_gbp_annualized") or lsmc_view.get("mtm_gbp", {})
     mtm = mtm_view.get("mtm", {})
     risk = mtm_view.get("risk_95", {})
@@ -456,18 +360,18 @@ with tabs[2]:
 
 with tabs[3]:
     st.header("Phase 4: LSMC Valuation")
-    st.caption(f"Showing {selected_duration_h}h output. Source: {lsmc_source or 'missing'}.")
+    st.caption(f"Showing {selected_duration_h}h output. Source: {lsmc_source}.")
     if lsmc_view:
         lsmc_metrics(lsmc_view)
         with st.expander("Raw LSMC summary"):
             st.json(lsmc_view, expanded=False)
     else:
-        st.info("No LSMC summary found.")
+        duration_output_notice(selected_duration_h, None)
     show_duration_image("lsmc_valuation", "Phase 4 LSMC valuation diagnostics", selected_duration_h)
 
 with tabs[4]:
     st.header("Phase 5: MTM, Greeks, VaR and Stress")
-    st.caption(f"Showing {selected_duration_h}h output. Source: {mtm_source or 'missing'}.")
+    st.caption(f"Showing {selected_duration_h}h output. Source: {mtm_source}.")
     if mtm_view:
         mtm = mtm_view.get("mtm", {})
         risk95 = mtm_view.get("risk_95", {})
@@ -505,7 +409,7 @@ with tabs[4]:
             st.subheader("Scenario Stress")
             show_table(pd.DataFrame(scenarios).T.reset_index())
     else:
-        st.info("No MTM summary found.")
+        duration_output_notice(selected_duration_h, None)
 
     for row in [
         [("mtm_components", "MTM components"), ("mtm_distribution", "MTM distribution")],
@@ -521,7 +425,7 @@ with tabs[4]:
 
 with tabs[5]:
     st.header("Phase 6: Dual Bound and Backtest")
-    st.caption(f"Showing {selected_duration_h}h output. Source: {phase6_source or 'missing'}.")
+    st.caption(f"Showing {selected_duration_h}h output. Source: {phase6_source}.")
     if phase6_summary:
         dual = phase6_summary.get("dual_bound", {})
         backtest = phase6_summary.get("backtest", {})
@@ -540,7 +444,7 @@ with tabs[5]:
         with st.expander("Raw Phase 6 summary"):
             st.json(phase6_summary, expanded=False)
     else:
-        st.info("No Phase 6 summary found.")
+        duration_output_notice(selected_duration_h, None)
 
     c1, c2, c3 = st.columns(3)
     with c1:
@@ -552,7 +456,7 @@ with tabs[5]:
 
 with tabs[6]:
     st.header("Phase 7: Historical Perfect-Foresight Benchmark")
-    st.caption(f"Showing {selected_duration_h}h output. Source: {pf_source or 'missing'}.")
+    st.caption(f"Showing {selected_duration_h}h output. Source: {pf_source}.")
     if pf_summary:
         results = pf_summary.get("results", {})
         rows = []
@@ -575,13 +479,11 @@ with tabs[6]:
             show_table(table)
 
         dispatch = optional_df(duration_file("perfect_foresight_da_dispatch", ".parquet", selected_duration_h))
-        if dispatch.empty:
-            dispatch = optional_df("perfect_foresight_da_dispatch.parquet")
         if not dispatch.empty:
             st.subheader("DA Dispatch Sample")
             show_table(dispatch.head(300), hide_index=False)
     else:
-        st.info("No perfect-foresight summary found.")
+        duration_output_notice(selected_duration_h, None)
 
     show_duration_image("perfect_foresight_da_high_value_week", "Highest-value day-ahead dispatch week", selected_duration_h)
 
@@ -597,10 +499,6 @@ with tabs[7]:
             f"mtm_summary_{selected_label}.json",
             f"phase6_summary_{selected_label}.json",
             f"perfect_foresight_summary_{selected_label}.json",
-            "lsmc_valuation_summary.json",
-            "mtm_summary.json",
-            "phase6_summary.json",
-            "perfect_foresight_summary.json",
             "ss_params.json",
             "pca_params.json",
             "imbalance_params.json",
