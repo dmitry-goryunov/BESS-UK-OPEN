@@ -5,6 +5,7 @@ from pathlib import Path
 from typing import Any
 
 import pandas as pd
+import plotly.graph_objects as go
 import streamlit as st
 
 
@@ -257,6 +258,9 @@ phase6_summary = optional_json(phase6_source) if duration_published else {}
 pf_summary = optional_json(pf_source) if duration_published else {}
 duration_basis = "duration-labelled notebook output" if duration_published else "not built"
 
+dash_all = optional_json("dashboard.json")
+dash = dash_all.get(selected_label, {})
+
 tabs = st.tabs(
     [
         "Overview",
@@ -266,6 +270,7 @@ tabs = st.tabs(
         "MTM Risk",
         "Backtest",
         "Perfect Foresight",
+        "HPFC & Valuation",
         "Files",
     ]
 )
@@ -506,6 +511,107 @@ with tabs[6]:
     show_duration_image("perfect_foresight_da_high_value_week", "Highest-value day-ahead dispatch week", selected_duration_h)
 
 with tabs[7]:
+    st.header("HPFC & Forward Intrinsic Valuation")
+    st.caption(f"Showing {selected_label} output. Source: dashboard.json. All values k€/MW/yr.")
+
+    if not dash:
+        st.info(f"No HPFC valuation found for {selected_label}. Run notebook 11 with VALUATION_DURATION_H = {selected_duration_h}.")
+    else:
+        tv   = dash["total_value"]
+        intr = dash["intrinsic"]
+        fx   = dash["fx_gbp_eur"]
+        avg_cycles = sum(r["cycles"] for r in intr) // len(intr)
+
+        c1, c2, c3, c4, c5 = st.columns(5)
+        with c1:
+            metric("Total value mean", f"{tv['mean']:.0f} k€/MW/yr", "LSMC stochastic MTM, annualised")
+        with c2:
+            metric("Total value P5/P95", f"{tv['p5']:.0f} / {tv['p95']:.0f}")
+        with c3:
+            metric("Intrinsic Y1 gross", f"{intr[0]['gross']:.0f} k€/MW/yr", "DA-only LP dispatch on hourly fwd curve")
+        with c4:
+            metric("Intrinsic / Total", f"{intr[0]['gross'] / tv['mean'] * 100:.0f}%")
+        with c5:
+            metric("Avg cycles/yr", str(avg_cycles))
+
+        # Plotly: intrinsic bars + LSMC band
+        years  = [r["year"] for r in intr]
+        gross  = [r["gross"] for r in intr]
+        bar_colors = ["steelblue" if r["in_fwd"] else "slategray" for r in intr]
+
+        fig = go.Figure()
+        fig.add_trace(go.Scatter(
+            x=years + years[::-1],
+            y=[tv["p95"]] * len(years) + [tv["p5"]] * len(years),
+            fill="toself", fillcolor="rgba(255,140,0,0.15)",
+            line=dict(color="rgba(0,0,0,0)"), hoverinfo="skip",
+            name="Total value P5–P95",
+        ))
+        fig.add_trace(go.Scatter(
+            x=years, y=[tv["mean"]] * len(years), mode="lines",
+            line=dict(color="darkorange", width=2, dash="dash"),
+            name=f"Total value mean ({tv['mean']:.0f})",
+        ))
+        fig.add_trace(go.Scatter(
+            x=years, y=[tv["p50"]] * len(years), mode="lines",
+            line=dict(color="darkorange", width=1, dash="dot"),
+            name=f"Total value P50 ({tv['p50']:.0f})",
+        ))
+        fig.add_trace(go.Bar(
+            x=years, y=gross, name="Intrinsic gross",
+            marker_color=bar_colors,
+            text=[f"{v:.0f}" for v in gross], textposition="outside",
+            hovertemplate="%{x}: %{y:.1f} k€/MW/yr<extra>Intrinsic gross</extra>",
+        ))
+        fig.update_layout(
+            title="Intrinsic gross vs LSMC total value  (k€/MW/yr, grey = extrapolated)",
+            yaxis_title="k€/MW/yr",
+            legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
+            plot_bgcolor="white", height=400, margin=dict(t=80, b=40),
+        )
+        fig.update_yaxes(gridcolor="rgba(0,0,0,0.07)", zeroline=True, zerolinecolor="black")
+        st.plotly_chart(fig, use_container_width=True)
+
+        # Year-by-year table
+        st.subheader("Year-by-year intrinsic breakdown  (k€/MW/yr)")
+        rows = [
+            {
+                "Year":    r["year"] + (" *" if not r["in_fwd"] else ""),
+                "Gross":   r["gross"],
+                "VOM":     r["vom"],
+                "Opt fee": r["optim"],
+                "FOM":     r["fom"],
+                "Cycles":  r["cycles"],
+            }
+            for r in intr
+        ]
+        df_intr = pd.DataFrame(rows)
+        totals = {
+            "Year": "Total",
+            "Gross":   round(df_intr["Gross"].sum(), 1),
+            "VOM":     round(df_intr["VOM"].sum(), 1),
+            "Opt fee": round(df_intr["Opt fee"].sum(), 1),
+            "FOM":     round(df_intr["FOM"].sum(), 1),
+            "Cycles":  int(df_intr["Cycles"].sum()),
+        }
+        df_intr = pd.concat([df_intr, pd.DataFrame([totals])], ignore_index=True)
+        show_table(df_intr)
+        st.caption(f"* flat-extrapolated beyond forward curve  |  FX: 1 GBP = {fx} EUR")
+
+        # Charts
+        c1, c2 = st.columns(2)
+        with c1:
+            show_image("hpfc_valuation_annual_pl.png", "Annual gross P&L breakdown")
+        with c2:
+            show_image("hpfc_valuation_cumulative.png", "Cumulative net P&L and SoC")
+
+        c1, c2 = st.columns(2)
+        with c1:
+            show_image("hpfc_shape_heatmap.png", "Shape multipliers: hour × day-of-week")
+        with c2:
+            show_image("hpfc_curve.png", "Hourly forward curve")
+
+with tabs[8]:
     st.header("Output Files")
     show_table(output_inventory())
     st.subheader("Raw JSON Outputs")
