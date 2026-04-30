@@ -11,6 +11,7 @@ import streamlit as st
 ROOT = Path(__file__).resolve().parent
 OUT = ROOT / "data" / "processed"
 POWER_MW = 100
+BUILT_VALUATION_DURATIONS = {2}
 
 st.set_page_config(
     page_title="BESS UK Valuation Outputs",
@@ -114,6 +115,9 @@ def show_image(name: str, caption: str) -> None:
 
 
 def show_duration_image(stem: str, caption: str, duration_h: int) -> None:
+    if not duration_is_published(duration_h):
+        st.info(f"Not built for {duration_label(duration_h)} yet.")
+        return
     name = duration_file(stem, ".png", duration_h)
     path = OUT / name
     if path.exists():
@@ -128,6 +132,19 @@ def duration_output_notice(duration_h: int, source: str | None) -> None:
             f"No {duration_label(duration_h)} valuation output has been built yet. "
             f"Run the notebooks for {duration_label(duration_h)} to generate duration-labelled files."
         )
+
+
+def duration_is_published(duration_h: int) -> bool:
+    if duration_h not in BUILT_VALUATION_DURATIONS:
+        return False
+    label = duration_label(duration_h)
+    required = [
+        OUT / f"lsmc_valuation_summary_{label}.json",
+        OUT / f"mtm_summary_{label}.json",
+        OUT / f"phase6_summary_{label}.json",
+        OUT / f"perfect_foresight_summary_{label}.json",
+    ]
+    return any(path.exists() for path in required)
 
 
 def dict_table(data: dict[str, Any], title: str) -> None:
@@ -229,15 +246,16 @@ with st.sidebar:
 
 sim_summary = optional_json("sim_summary.json")
 selected_label = duration_label(selected_duration_h)
+duration_published = duration_is_published(selected_duration_h)
 lsmc_source = f"lsmc_valuation_summary_{selected_label}.json"
 mtm_source = f"mtm_summary_{selected_label}.json"
 phase6_source = f"phase6_summary_{selected_label}.json"
 pf_source = f"perfect_foresight_summary_{selected_label}.json"
-lsmc_view = optional_json(lsmc_source)
-mtm_view = optional_json(mtm_source)
-phase6_summary = optional_json(phase6_source)
-pf_summary = optional_json(pf_source)
-duration_basis = "duration-labelled notebook output" if any([lsmc_view, mtm_view, phase6_summary, pf_summary]) else "not built"
+lsmc_view = optional_json(lsmc_source) if duration_published else {}
+mtm_view = optional_json(mtm_source) if duration_published else {}
+phase6_summary = optional_json(phase6_source) if duration_published else {}
+pf_summary = optional_json(pf_source) if duration_published else {}
+duration_basis = "duration-labelled notebook output" if duration_published else "not built"
 
 tabs = st.tabs(
     [
