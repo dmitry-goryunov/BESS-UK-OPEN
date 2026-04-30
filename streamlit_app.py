@@ -380,9 +380,9 @@ with tabs[4]:
         with c1:
             metric("Annual mean", money(risk95.get("mean_gbp_per_year", risk95.get("mean_gbp"))))
         with c2:
-            metric("VaR 95", money(risk95.get("var_gbp_per_year", risk95.get("var_gbp"))))
+            metric("VaR 95 (P5-P50)", money(risk95.get("var_gbp_per_year", risk95.get("var_gbp"))))
         with c3:
-            metric("CVaR 95", money(risk95.get("cvar_gbp_per_year", risk95.get("cvar_gbp"))))
+            metric("CVaR 95 (tail-P50)", money(risk95.get("cvar_gbp_per_year", risk95.get("cvar_gbp"))))
         with c4:
             metric("MTM GBP/MW/yr", money(mtm.get("total_mean")))
 
