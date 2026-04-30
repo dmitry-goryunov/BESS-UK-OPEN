@@ -12,7 +12,6 @@ import streamlit as st
 ROOT = Path(__file__).resolve().parent
 OUT = ROOT / "data" / "processed"
 POWER_MW = 100
-BUILT_VALUATION_DURATIONS = {2}
 
 st.set_page_config(
     page_title="BESS UK Valuation Outputs",
@@ -136,8 +135,6 @@ def duration_output_notice(duration_h: int, source: str | None) -> None:
 
 
 def duration_is_published(duration_h: int) -> bool:
-    if duration_h not in BUILT_VALUATION_DURATIONS:
-        return False
     label = duration_label(duration_h)
     required = [
         OUT / f"lsmc_valuation_summary_{label}.json",
