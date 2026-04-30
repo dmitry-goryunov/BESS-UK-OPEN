@@ -1,8 +1,8 @@
 {
   "asset": {
     "power_mw": 100.0,
-    "energy_mwh": 200.0,
-    "duration_h": 2.0,
+    "energy_mwh": 100.0,
+    "duration_h": 1.0,
     "rte": 0.88,
     "eta_charge": 0.9381,
     "eta_discharge": 0.9381,
@@ -14,8 +14,8 @@
   "assumptions": {
     "dt_h": 0.5,
     "perfect_foresight": true,
-    "duration_h": 2.0,
-    "duration_label": "2h",
+    "duration_h": 1.0,
+    "duration_label": "1h",
     "terminal_soc_equals_initial": true
   },
   "results": {
@@ -26,14 +26,14 @@
       "price_min_gbp_mwh": -102.92,
       "price_mean_gbp_mwh": 39.71632428243239,
       "price_max_gbp_mwh": 1352.9,
-      "value_gbp": 126376826.96728773,
-      "value_gbp_per_mw": 1263768.2696728774,
-      "value_gbp_per_mw_year": 306418.94440295623,
+      "value_gbp": 124058390.29872695,
+      "value_gbp_per_mw": 1240583.9029872695,
+      "value_gbp_per_mw_year": 300797.55847569765,
       "horizon_years": 4.124315068493151,
-      "equivalent_cycles": 7824.634406994146,
-      "mean_daily_gbp": 167386.52578448708,
-      "terminal_soc_mwh": 100.0,
-      "dispatch_path": "G:\\My Drive\\Research\\bess_project\\data\\processed\\perfect_foresight_da_dispatch_2h.parquet"
+      "equivalent_cycles": 15592.068817765587,
+      "mean_daily_gbp": 164315.7487400357,
+      "terminal_soc_mwh": 50.0,
+      "dispatch_path": "G:\\My Drive\\Research\\bess_project\\data\\processed\\perfect_foresight_da_dispatch_1h.parquet"
     },
     "SP": {
       "rows": 36240,
@@ -42,14 +42,14 @@
       "price_min_gbp_mwh": -97.92,
       "price_mean_gbp_mwh": 79.2035681440846,
       "price_max_gbp_mwh": 2900.0,
-      "value_gbp": 22028502.956402697,
-      "value_gbp_per_mw": 220285.02956402698,
-      "value_gbp_per_mw_year": 106495.41164353622,
+      "value_gbp": 14835423.950017229,
+      "value_gbp_per_mw": 148354.2395001723,
+      "value_gbp_per_mw_year": 71720.92373187137,
       "horizon_years": 2.0684931506849313,
-      "equivalent_cycles": 2214.990142996729,
-      "mean_daily_gbp": 29176.825107818142,
-      "terminal_soc_mwh": 100.0,
-      "dispatch_path": "G:\\My Drive\\Research\\bess_project\\data\\processed\\perfect_foresight_sp_dispatch_2h.parquet"
+      "equivalent_cycles": 3249.165548479251,
+      "mean_daily_gbp": 19649.568145718185,
+      "terminal_soc_mwh": 50.0,
+      "dispatch_path": "G:\\My Drive\\Research\\bess_project\\data\\processed\\perfect_foresight_sp_dispatch_1h.parquet"
     }
   }
 }

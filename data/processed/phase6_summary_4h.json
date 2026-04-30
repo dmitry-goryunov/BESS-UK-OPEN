@@ -1,0 +1,41 @@
+{
+  "duration_h": 4.0,
+  "duration_label": "4h",
+  "asset_mw": 100.0,
+  "asset_mwh": 400.0,
+  "dual_bound": {
+    "value_basis": "annualized_gbp_per_year",
+    "annualization_factor": 8.11111111111111,
+    "horizon_years": 0.1232876712328767,
+    "asset_mw": 100.0,
+    "v_lsmc_gbp": 8043513.810452651,
+    "v_dual_gbp": 17752848.51701545,
+    "v_dual_std": 6998645.261294272,
+    "v_ri_gbp": 0.0,
+    "v_lsmc_gbp_per_mw_year": 80435.13810452652,
+    "v_dual_gbp_per_mw_year": 177528.48517015448,
+    "v_lsmc_horizon_gbp": 991666.0862201899,
+    "v_dual_horizon_gbp": 2188707.351412864,
+    "gap_abs_gbp": 9709334.7065628,
+    "gap_pct": 1.2071011420338948,
+    "n_paths": 100,
+    "dual_ok": false,
+    "threshold": 0.02
+  },
+  "backtest": {
+    "n_periods": 30,
+    "total_delta_mtm": 201769.44969265908,
+    "total_theta": -366902.68960690126,
+    "total_delta_explain": 7059423.057593369,
+    "total_exec_surprise": -24382.991874087165,
+    "total_deg_surprise": -4912.787964586054,
+    "total_calib_effect": 0.0,
+    "total_residual": -6461455.138455136,
+    "residual_pct_total": 32.023951833626974,
+    "mean_daily_residual_pct": 12.646720157938978,
+    "p95_daily_residual_pct": 36.23059080816865,
+    "pass_residual_target": false,
+    "target_residual_pct": 0.05
+  },
+  "soh_base_yr15": 0.6887493165645824
+}
