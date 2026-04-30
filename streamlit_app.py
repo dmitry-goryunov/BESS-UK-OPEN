@@ -47,11 +47,27 @@ def optional_json(name: str) -> dict[str, Any]:
     return load_json(path, path.stat().st_mtime_ns)
 
 
+def optional_json_first(*names: str) -> tuple[dict[str, Any], str | None]:
+    for name in names:
+        data = optional_json(name)
+        if data:
+            return data, name
+    return {}, None
+
+
 def optional_df(name: str) -> pd.DataFrame:
     path = OUT / name
     if not path.exists():
         return pd.DataFrame()
     return load_parquet(path, path.stat().st_mtime_ns)
+
+
+def duration_label(duration_h: int) -> str:
+    return f"{duration_h:g}h"
+
+
+def duration_file(stem: str, suffix: str, duration_h: int) -> str:
+    return f"{stem}_{duration_label(duration_h)}{suffix}"
 
 
 def duration_scale(duration_h: int) -> float:
@@ -187,6 +203,19 @@ def show_image(name: str, caption: str) -> None:
         st.info(f"Missing output: {name}")
 
 
+def show_image_first(names: list[str], caption: str) -> None:
+    for name in names:
+        path = OUT / name
+        if path.exists():
+            st.image(load_image(path, path.stat().st_mtime_ns), caption=f"{caption} ({name})", width="stretch")
+            return
+    st.info(f"Missing output: {names[0]}")
+
+
+def show_duration_image(stem: str, caption: str, duration_h: int) -> None:
+    show_image_first([duration_file(stem, ".png", duration_h), f"{stem}.png"], caption)
+
+
 def dict_table(data: dict[str, Any], title: str) -> None:
     st.subheader(title)
     if not data:
@@ -277,7 +306,7 @@ with st.sidebar:
     selected_duration_h = st.radio("Duration", [1, 2, 4], index=1, horizontal=True)
     st.metric("Power", f"{POWER_MW} MW")
     st.metric("Energy", f"{POWER_MW * selected_duration_h} MWh")
-    st.caption("2h is the cached base case. 1h and 4h are scaled duration sensitivities.")
+    st.caption("Uses duration-labelled valuation outputs when available.")
     st.divider()
     st.header("Published Files")
     show_table(output_inventory())
@@ -285,12 +314,28 @@ with st.sidebar:
     st.markdown("Run locally with `streamlit run streamlit_app.py`.")
 
 sim_summary = optional_json("sim_summary.json")
-lsmc_summary = optional_json("lsmc_valuation_summary.json")
-mtm_summary = optional_json("mtm_summary.json")
-phase6_summary = optional_json("phase6_summary.json")
-pf_summary = optional_json("perfect_foresight_summary.json")
-lsmc_view = duration_adjusted_lsmc(lsmc_summary, selected_duration_h)
-mtm_view = duration_adjusted_mtm(mtm_summary, selected_duration_h)
+selected_label = duration_label(selected_duration_h)
+lsmc_summary, lsmc_source = optional_json_first(
+    f"lsmc_valuation_summary_{selected_label}.json",
+    "lsmc_valuation_summary.json",
+)
+mtm_summary, mtm_source = optional_json_first(
+    f"mtm_summary_{selected_label}.json",
+    "mtm_summary.json",
+)
+phase6_summary, phase6_source = optional_json_first(
+    f"phase6_summary_{selected_label}.json",
+    "phase6_summary.json",
+)
+pf_summary, pf_source = optional_json_first(
+    f"perfect_foresight_summary_{selected_label}.json",
+    "perfect_foresight_summary.json",
+)
+lsmc_is_labelled = lsmc_source == f"lsmc_valuation_summary_{selected_label}.json"
+mtm_is_labelled = mtm_source == f"mtm_summary_{selected_label}.json"
+lsmc_view = lsmc_summary if lsmc_is_labelled else duration_adjusted_lsmc(lsmc_summary, selected_duration_h)
+mtm_view = mtm_summary if mtm_is_labelled else duration_adjusted_mtm(mtm_summary, selected_duration_h)
+duration_basis = "duration-labelled notebook output" if lsmc_is_labelled or mtm_is_labelled else "scaled fallback from cached output"
 
 tabs = st.tabs(
     [
@@ -326,16 +371,16 @@ with tabs[0]:
 
     c1, c2, c3 = st.columns(3)
     with c1:
-        show_image("lsmc_valuation.png", "Phase 4 LSMC valuation diagnostics")
+        show_duration_image("lsmc_valuation", "Phase 4 LSMC valuation diagnostics", selected_duration_h)
     with c2:
-        show_image("mtm_distribution.png", "Phase 5 MTM distribution")
+        show_duration_image("mtm_distribution", "Phase 5 MTM distribution", selected_duration_h)
     with c3:
-        show_image("perfect_foresight_da_high_value_week.png", "Phase 7 high-value DA dispatch week")
+        show_duration_image("perfect_foresight_da_high_value_week", "Phase 7 high-value DA dispatch week", selected_duration_h)
 
     st.subheader("Current Caveats")
     caveats = [
         f"Selected asset: {POWER_MW} MW / {POWER_MW * selected_duration_h} MWh ({selected_duration_h}h duration).",
-        "The duration selector is a sensitivity on the cached 2h valuation, not a fresh LSMC re-solve.",
+        f"Valuation basis: {duration_basis}.",
         "Phase 4-6 outputs are fast-development partial-mode outputs, not final production economics.",
         "The dual bound is a clairvoyant information-relaxation benchmark, not a martingale-penalty proof.",
         "The perfect-foresight benchmark is an upper benchmark and is not a tradable strategy.",
@@ -411,18 +456,18 @@ with tabs[2]:
 
 with tabs[3]:
     st.header("Phase 4: LSMC Valuation")
-    st.caption(f"Showing {selected_duration_h}h duration sensitivity; 2h is the cached base case.")
+    st.caption(f"Showing {selected_duration_h}h output. Source: {lsmc_source or 'missing'}.")
     if lsmc_view:
         lsmc_metrics(lsmc_view)
         with st.expander("Raw LSMC summary"):
             st.json(lsmc_view, expanded=False)
     else:
         st.info("No LSMC summary found.")
-    show_image("lsmc_valuation.png", "Phase 4 LSMC valuation diagnostics")
+    show_duration_image("lsmc_valuation", "Phase 4 LSMC valuation diagnostics", selected_duration_h)
 
 with tabs[4]:
     st.header("Phase 5: MTM, Greeks, VaR and Stress")
-    st.caption(f"Showing {selected_duration_h}h duration sensitivity; 2h is the cached base case.")
+    st.caption(f"Showing {selected_duration_h}h output. Source: {mtm_source or 'missing'}.")
     if mtm_view:
         mtm = mtm_view.get("mtm", {})
         risk95 = mtm_view.get("risk_95", {})
@@ -463,17 +508,20 @@ with tabs[4]:
         st.info("No MTM summary found.")
 
     for row in [
-        [("mtm_components.png", "MTM components"), ("mtm_distribution.png", "MTM distribution")],
-        [("greek_ladder.png", "Greek ladder"), ("var_cvar.png", "VaR / CVaR")],
-        [("scenario_stress.png", "Scenario stress"), ("soh_trajectory.png", "SOH trajectory")],
+        [("mtm_components", "MTM components"), ("mtm_distribution", "MTM distribution")],
+        [("greek_ladder", "Greek ladder"), ("var_cvar", "VaR / CVaR")],
+        [("scenario_stress", "Scenario stress")],
     ]:
         cols = st.columns(len(row))
-        for col, (name, caption) in zip(cols, row):
+        for col, (stem, caption) in zip(cols, row):
             with col:
-                show_image(name, caption)
+                show_duration_image(stem, caption, selected_duration_h)
+
+    show_duration_image("soh_trajectory", "SOH trajectory", selected_duration_h)
 
 with tabs[5]:
     st.header("Phase 6: Dual Bound and Backtest")
+    st.caption(f"Showing {selected_duration_h}h output. Source: {phase6_source or 'missing'}.")
     if phase6_summary:
         dual = phase6_summary.get("dual_bound", {})
         backtest = phase6_summary.get("backtest", {})
@@ -496,14 +544,15 @@ with tabs[5]:
 
     c1, c2, c3 = st.columns(3)
     with c1:
-        show_image("dual_bound.png", "Dual bound")
+        show_duration_image("dual_bound", "Dual bound", selected_duration_h)
     with c2:
-        show_image("backtest_pnl.png", "Backtest P&L")
+        show_duration_image("backtest_pnl", "Backtest P&L", selected_duration_h)
     with c3:
-        show_image("pnl_attribution.png", "P&L attribution")
+        show_duration_image("pnl_attribution", "P&L attribution", selected_duration_h)
 
 with tabs[6]:
     st.header("Phase 7: Historical Perfect-Foresight Benchmark")
+    st.caption(f"Showing {selected_duration_h}h output. Source: {pf_source or 'missing'}.")
     if pf_summary:
         results = pf_summary.get("results", {})
         rows = []
@@ -525,14 +574,16 @@ with tabs[6]:
 
             show_table(table)
 
-        dispatch = optional_df("perfect_foresight_da_dispatch.parquet")
+        dispatch = optional_df(duration_file("perfect_foresight_da_dispatch", ".parquet", selected_duration_h))
+        if dispatch.empty:
+            dispatch = optional_df("perfect_foresight_da_dispatch.parquet")
         if not dispatch.empty:
             st.subheader("DA Dispatch Sample")
             show_table(dispatch.head(300), hide_index=False)
     else:
         st.info("No perfect-foresight summary found.")
 
-    show_image("perfect_foresight_da_high_value_week.png", "Highest-value day-ahead dispatch week")
+    show_duration_image("perfect_foresight_da_high_value_week", "Highest-value day-ahead dispatch week", selected_duration_h)
 
 with tabs[7]:
     st.header("Output Files")
@@ -542,6 +593,10 @@ with tabs[7]:
         "Summary file",
         [
             "sim_summary.json",
+            f"lsmc_valuation_summary_{selected_label}.json",
+            f"mtm_summary_{selected_label}.json",
+            f"phase6_summary_{selected_label}.json",
+            f"perfect_foresight_summary_{selected_label}.json",
             "lsmc_valuation_summary.json",
             "mtm_summary.json",
             "phase6_summary.json",
