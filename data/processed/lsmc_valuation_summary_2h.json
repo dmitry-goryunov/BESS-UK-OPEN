@@ -38,8 +38,8 @@
   "ri_mean_gbp_per_mw_year": 1693,
   "lsmc_ri_ratio": 67.103,
   "v_lsmc_gte_v_ri": true,
-  "bwd_time_s": 61.5,
-  "fwd_time_s": 20.5,
+  "bwd_time_s": 63.2,
+  "fwd_time_s": 22.4,
   "action_distribution": {
     "total_decisions": 4320000,
     "mode_count": 12,
