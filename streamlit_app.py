@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from copy import deepcopy
 import json
 from pathlib import Path
 from typing import Any
@@ -10,6 +11,8 @@ import streamlit as st
 
 ROOT = Path(__file__).resolve().parent
 OUT = ROOT / "data" / "processed"
+BASE_DURATION_H = 2
+POWER_MW = 100
 
 st.set_page_config(
     page_title="BESS UK Valuation Outputs",
@@ -49,6 +52,86 @@ def optional_df(name: str) -> pd.DataFrame:
     if not path.exists():
         return pd.DataFrame()
     return load_parquet(path, path.stat().st_mtime_ns)
+
+
+def duration_scale(duration_h: int) -> float:
+    return duration_h / BASE_DURATION_H
+
+
+def duration_adjusted_lsmc(summary: dict[str, Any], duration_h: int) -> dict[str, Any]:
+    adjusted = deepcopy(summary)
+    adjusted["asset_mwh"] = POWER_MW * duration_h
+    adjusted["duration_h"] = duration_h
+    adjusted["duration_basis"] = "cached 2h valuation output" if duration_h == BASE_DURATION_H else "scaled from 2h cached valuation output"
+    if duration_h == BASE_DURATION_H:
+        return adjusted
+
+    scale = duration_scale(duration_h)
+    for group in [
+        "mtm_gbp_horizon",
+        "mtm_gbp_annualized",
+        "mtm_gbp_per_mw_horizon",
+        "mtm_gbp_per_mw_year",
+    ]:
+        values = adjusted.get(group, {})
+        if isinstance(values, dict):
+            for key, value in list(values.items()):
+                if isinstance(value, (int, float)):
+                    values[key] = value * scale
+    return adjusted
+
+
+def duration_adjusted_mtm(summary: dict[str, Any], duration_h: int) -> dict[str, Any]:
+    adjusted = deepcopy(summary)
+    mtm = adjusted.get("mtm", {})
+    if not isinstance(mtm, dict):
+        return adjusted
+    mtm["duration_h"] = duration_h
+    mtm["asset_mwh"] = POWER_MW * duration_h
+    mtm["duration_basis"] = "cached 2h valuation output" if duration_h == BASE_DURATION_H else "energy-sensitive components scaled from 2h cached valuation"
+    if duration_h == BASE_DURATION_H:
+        return adjusted
+
+    scale = duration_scale(duration_h)
+    for key in ["merchant", "floor_optionality", "optimiser_fee", "augmentation"]:
+        if isinstance(mtm.get(key), (int, float)):
+            mtm[key] *= scale
+
+    component_keys = [
+        "merchant",
+        "toll",
+        "floor_contracted",
+        "cm",
+        "floor_optionality",
+        "optimiser_fee",
+        "opex_fixed",
+        "augmentation",
+    ]
+    total = sum(mtm.get(key, 0.0) for key in component_keys if isinstance(mtm.get(key), (int, float)))
+    mtm["total_mean"] = total
+    for key in ["total_std", "total_p5", "total_p95"]:
+        if isinstance(mtm.get(key), (int, float)):
+            mtm[key] *= scale
+
+    life_years = mtm.get("life_years", 15)
+    for risk_key in ["risk_95", "risk_99"]:
+        risk = adjusted.get(risk_key, {})
+        if not isinstance(risk, dict):
+            continue
+        risk["mean_gbp_per_mw_year"] = total
+        risk["mean_gbp_per_year"] = total * POWER_MW
+        risk["mean_gbp"] = total * POWER_MW * life_years
+        for field in ["std", "var", "cvar", "p5", "p50", "p95"]:
+            per_mw_key = f"{field}_gbp_per_mw_year"
+            per_year_key = f"{field}_gbp_per_year"
+            lifetime_key = f"{field}_gbp"
+            if isinstance(risk.get(per_mw_key), (int, float)):
+                risk[per_mw_key] *= scale
+                risk[per_year_key] = risk[per_mw_key] * POWER_MW
+                risk[lifetime_key] = risk[per_year_key] * life_years
+        risk["duration_h"] = duration_h
+        risk["asset_mwh"] = POWER_MW * duration_h
+    return adjusted
 
 
 def formatted_number(value: Any) -> str:
@@ -190,6 +273,12 @@ if not OUT.exists():
     st.stop()
 
 with st.sidebar:
+    st.header("Asset")
+    selected_duration_h = st.radio("Duration", [1, 2, 4], index=1, horizontal=True)
+    st.metric("Power", f"{POWER_MW} MW")
+    st.metric("Energy", f"{POWER_MW * selected_duration_h} MWh")
+    st.caption("2h is the cached base case. 1h and 4h are scaled duration sensitivities.")
+    st.divider()
     st.header("Published Files")
     show_table(output_inventory())
     st.divider()
@@ -200,6 +289,8 @@ lsmc_summary = optional_json("lsmc_valuation_summary.json")
 mtm_summary = optional_json("mtm_summary.json")
 phase6_summary = optional_json("phase6_summary.json")
 pf_summary = optional_json("perfect_foresight_summary.json")
+lsmc_view = duration_adjusted_lsmc(lsmc_summary, selected_duration_h)
+mtm_view = duration_adjusted_mtm(mtm_summary, selected_duration_h)
 
 tabs = st.tabs(
     [
@@ -216,9 +307,9 @@ tabs = st.tabs(
 
 with tabs[0]:
     st.header("Executive Outputs")
-    lsmc = lsmc_summary.get("mtm_gbp_annualized") or lsmc_summary.get("mtm_gbp", {})
-    mtm = mtm_summary.get("mtm", {})
-    risk = mtm_summary.get("risk_95", {})
+    lsmc = lsmc_view.get("mtm_gbp_annualized") or lsmc_view.get("mtm_gbp", {})
+    mtm = mtm_view.get("mtm", {})
+    risk = mtm_view.get("risk_95", {})
     pf_results = pf_summary.get("results", {})
     da_pf = pf_results.get("DA", {})
     phase6 = phase6_summary.get("dual_bound", {})
@@ -243,6 +334,8 @@ with tabs[0]:
 
     st.subheader("Current Caveats")
     caveats = [
+        f"Selected asset: {POWER_MW} MW / {POWER_MW * selected_duration_h} MWh ({selected_duration_h}h duration).",
+        "The duration selector is a sensitivity on the cached 2h valuation, not a fresh LSMC re-solve.",
         "Phase 4-6 outputs are fast-development partial-mode outputs, not final production economics.",
         "The dual bound is a clairvoyant information-relaxation benchmark, not a martingale-penalty proof.",
         "The perfect-foresight benchmark is an upper benchmark and is not a tradable strategy.",
@@ -318,20 +411,22 @@ with tabs[2]:
 
 with tabs[3]:
     st.header("Phase 4: LSMC Valuation")
-    if lsmc_summary:
-        lsmc_metrics(lsmc_summary)
+    st.caption(f"Showing {selected_duration_h}h duration sensitivity; 2h is the cached base case.")
+    if lsmc_view:
+        lsmc_metrics(lsmc_view)
         with st.expander("Raw LSMC summary"):
-            st.json(lsmc_summary, expanded=False)
+            st.json(lsmc_view, expanded=False)
     else:
         st.info("No LSMC summary found.")
     show_image("lsmc_valuation.png", "Phase 4 LSMC valuation diagnostics")
 
 with tabs[4]:
     st.header("Phase 5: MTM, Greeks, VaR and Stress")
-    if mtm_summary:
-        mtm = mtm_summary.get("mtm", {})
-        risk95 = mtm_summary.get("risk_95", {})
-        risk99 = mtm_summary.get("risk_99", {})
+    st.caption(f"Showing {selected_duration_h}h duration sensitivity; 2h is the cached base case.")
+    if mtm_view:
+        mtm = mtm_view.get("mtm", {})
+        risk95 = mtm_view.get("risk_95", {})
+        risk99 = mtm_view.get("risk_99", {})
         c1, c2, c3, c4 = st.columns(4)
         with c1:
             metric("Annual mean", money(risk95.get("mean_gbp_per_year", risk95.get("mean_gbp"))))
@@ -355,12 +450,12 @@ with tabs[4]:
             )
         )
 
-        greeks = mtm_summary.get("greeks", {})
+        greeks = mtm_view.get("greeks", {})
         if greeks:
             st.subheader("Greek Ladder")
             show_table(pd.DataFrame(greeks).T.reset_index())
 
-        scenarios = mtm_summary.get("scenarios", {})
+        scenarios = mtm_view.get("scenarios", {})
         if scenarios:
             st.subheader("Scenario Stress")
             show_table(pd.DataFrame(scenarios).T.reset_index())
