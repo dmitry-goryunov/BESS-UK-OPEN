@@ -78,7 +78,7 @@ def duration_adjusted_lsmc(summary: dict[str, Any], duration_h: int) -> dict[str
     adjusted = deepcopy(summary)
     adjusted["asset_mwh"] = POWER_MW * duration_h
     adjusted["duration_h"] = duration_h
-    adjusted["duration_basis"] = "cached 2h valuation output" if duration_h == BASE_DURATION_H else "scaled from 2h cached valuation output"
+    adjusted["duration_basis"] = "loaded valuation output" if duration_h == BASE_DURATION_H else "scaled fallback from loaded valuation output"
     if duration_h == BASE_DURATION_H:
         return adjusted
 
@@ -104,7 +104,7 @@ def duration_adjusted_mtm(summary: dict[str, Any], duration_h: int) -> dict[str,
         return adjusted
     mtm["duration_h"] = duration_h
     mtm["asset_mwh"] = POWER_MW * duration_h
-    mtm["duration_basis"] = "cached 2h valuation output" if duration_h == BASE_DURATION_H else "energy-sensitive components scaled from 2h cached valuation"
+    mtm["duration_basis"] = "loaded valuation output" if duration_h == BASE_DURATION_H else "energy-sensitive components scaled from loaded valuation"
     if duration_h == BASE_DURATION_H:
         return adjusted
 

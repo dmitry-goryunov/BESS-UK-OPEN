@@ -14,10 +14,10 @@ source code remain local working files and are not needed to view the dashboard.
 | Overview | Headline LSMC, MTM, risk, backtest, and perfect-foresight outputs |
 | Calibration | `ss_params.json`, `pca_params.json`, `imbalance_params.json`, `ancillary_params.json` |
 | Simulation | `sim_summary.json` and simulation diagnostic charts |
-| LSMC | `lsmc_valuation_summary.json`, `lsmc_valuation.png` |
-| MTM Risk | `mtm_summary.json`, MTM, Greeks, VaR/CVaR, stress and SOH charts |
-| Backtest | `phase6_summary.json`, dual-bound and P&L attribution charts |
-| Perfect Foresight | `perfect_foresight_summary.json`, dispatch parquet, high-value week chart |
+| LSMC | Duration-labelled `lsmc_valuation_summary_<hours>.json`, `lsmc_valuation_<hours>.png` |
+| MTM Risk | Duration-labelled `mtm_summary_<hours>.json`, MTM, Greeks, VaR/CVaR, stress and SOH charts |
+| Backtest | Duration-labelled `phase6_summary_<hours>.json`, dual-bound and P&L attribution charts |
+| Perfect Foresight | Duration-labelled `perfect_foresight_summary_<hours>.json`, dispatch parquet, high-value week chart |
 | Files | Inventory and raw JSON viewer for published outputs |
 
 ## Run Locally
