@@ -1,0 +1,13 @@
+duration_h,duration_label,notebook,returncode,elapsed_s,output,elapsed_min
+1.0,1h,04_lsmc_valuation.ipynb,0,14.809890985488892,04_lsmc_valuation_1h.executed.ipynb,0.24683151642481485
+1.0,1h,05_mtm_risk_greeks.ipynb,0,11.11815357208252,05_mtm_risk_greeks_1h.executed.ipynb,0.18530255953470867
+1.0,1h,06_backtest_pnl.ipynb,0,15.332618474960327,06_backtest_pnl_1h.executed.ipynb,0.25554364124933876
+1.0,1h,07_historical_perfect_foresight.ipynb,0,13.158640146255493,07_historical_perfect_foresight_1h.executed.ipynb,0.21931066910425823
+2.0,2h,04_lsmc_valuation.ipynb,0,14.81331491470337,04_lsmc_valuation_2h.executed.ipynb,0.24688858191172283
+2.0,2h,05_mtm_risk_greeks.ipynb,0,10.72325086593628,05_mtm_risk_greeks_2h.executed.ipynb,0.17872084776560465
+2.0,2h,06_backtest_pnl.ipynb,0,15.16762089729309,06_backtest_pnl_2h.executed.ipynb,0.2527936816215515
+2.0,2h,07_historical_perfect_foresight.ipynb,0,12.476693153381348,07_historical_perfect_foresight_2h.executed.ipynb,0.20794488588968912
+4.0,4h,04_lsmc_valuation.ipynb,0,14.574909210205078,04_lsmc_valuation_4h.executed.ipynb,0.24291515350341797
+4.0,4h,05_mtm_risk_greeks.ipynb,0,11.149417161941528,05_mtm_risk_greeks_4h.executed.ipynb,0.18582361936569214
+4.0,4h,06_backtest_pnl.ipynb,0,15.610296249389648,06_backtest_pnl_4h.executed.ipynb,0.26017160415649415
+4.0,4h,07_historical_perfect_foresight.ipynb,0,12.170542001724243,07_historical_perfect_foresight_4h.executed.ipynb,0.20284236669540406

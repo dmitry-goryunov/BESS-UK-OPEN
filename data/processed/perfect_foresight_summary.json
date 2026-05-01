@@ -1,0 +1,53 @@
+{
+  "asset": {
+    "power_mw": 100.0,
+    "energy_mwh": 200.0,
+    "duration_h": 2.0,
+    "rte": 0.88,
+    "eta_charge": 0.9381,
+    "eta_discharge": 0.9381,
+    "soc_min_frac": 0.1,
+    "soc_max_frac": 0.9,
+    "soc_init_frac": 0.5,
+    "vom_gbp_mwh": 1.2
+  },
+  "assumptions": {
+    "dt_h": 0.5,
+    "perfect_foresight": true,
+    "terminal_soc_equals_initial": true
+  },
+  "results": {
+    "DA": {
+      "rows": 72258,
+      "start_date": "2024-04-01",
+      "end_date": "2026-04-25",
+      "price_min_gbp_mwh": -102.92,
+      "price_mean_gbp_mwh": 39.71632428243239,
+      "price_max_gbp_mwh": 1352.9,
+      "value_gbp": 126376826.96728773,
+      "value_gbp_per_mw": 1263768.2696728774,
+      "value_gbp_per_mw_year": 306418.94440295623,
+      "horizon_years": 4.124315068493151,
+      "equivalent_cycles": 7824.634406994146,
+      "mean_daily_gbp": 167386.52578448708,
+      "terminal_soc_mwh": 100.0,
+      "dispatch_path": "G:\\My Drive\\Research\\bess_project\\data\\processed\\perfect_foresight_da_dispatch.parquet"
+    },
+    "SP": {
+      "rows": 36240,
+      "start_date": "2024-04-01",
+      "end_date": "2026-04-25",
+      "price_min_gbp_mwh": -97.92,
+      "price_mean_gbp_mwh": 79.2035681440846,
+      "price_max_gbp_mwh": 2900.0,
+      "value_gbp": 22028502.956402697,
+      "value_gbp_per_mw": 220285.02956402698,
+      "value_gbp_per_mw_year": 106495.41164353622,
+      "horizon_years": 2.0684931506849313,
+      "equivalent_cycles": 2214.990142996729,
+      "mean_daily_gbp": 29176.825107818142,
+      "terminal_soc_mwh": 100.0,
+      "dispatch_path": "G:\\My Drive\\Research\\bess_project\\data\\processed\\perfect_foresight_sp_dispatch.parquet"
+    }
+  }
+}

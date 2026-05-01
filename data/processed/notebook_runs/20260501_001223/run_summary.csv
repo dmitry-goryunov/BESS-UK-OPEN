@@ -1,0 +1,13 @@
+duration_h,duration_label,notebook,returncode,elapsed_s,output,elapsed_min
+1.0,1h,04_lsmc_valuation.ipynb,0,44.64159417152405,04_lsmc_valuation_1h.executed.ipynb,0.7440265695254008
+1.0,1h,05_mtm_risk_greeks.ipynb,0,13.681648969650269,05_mtm_risk_greeks_1h.executed.ipynb,0.22802748282750449
+1.0,1h,06_backtest_pnl.ipynb,0,56.663023233413696,06_backtest_pnl_1h.executed.ipynb,0.9443837205568949
+1.0,1h,07_historical_perfect_foresight.ipynb,0,22.42168641090393,07_historical_perfect_foresight_1h.executed.ipynb,0.3736947735150655
+2.0,2h,04_lsmc_valuation.ipynb,0,65.79605436325073,04_lsmc_valuation_2h.executed.ipynb,1.0966009060541788
+2.0,2h,05_mtm_risk_greeks.ipynb,0,11.149179935455322,05_mtm_risk_greeks_2h.executed.ipynb,0.18581966559092203
+2.0,2h,06_backtest_pnl.ipynb,0,81.33442211151123,06_backtest_pnl_2h.executed.ipynb,1.3555737018585206
+2.0,2h,07_historical_perfect_foresight.ipynb,0,20.96578073501587,07_historical_perfect_foresight_2h.executed.ipynb,0.34942967891693116
+4.0,4h,04_lsmc_valuation.ipynb,0,86.83173751831055,04_lsmc_valuation_4h.executed.ipynb,1.4471956253051759
+4.0,4h,05_mtm_risk_greeks.ipynb,0,13.653505086898804,05_mtm_risk_greeks_4h.executed.ipynb,0.22755841811498007
+4.0,4h,06_backtest_pnl.ipynb,0,103.08514857292175,06_backtest_pnl_4h.executed.ipynb,1.718085809548696
+4.0,4h,07_historical_perfect_foresight.ipynb,0,18.9331693649292,07_historical_perfect_foresight_4h.executed.ipynb,0.31555282274881996

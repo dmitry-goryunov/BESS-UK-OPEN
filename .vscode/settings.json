@@ -1,0 +1,7 @@
+{
+  "notebook.output.scrolling": true,
+  "notebook.output.textLineLimit": 200,
+  "notebook.output.wordWrap": true,
+  "editor.smoothScrolling": true,
+  "workbench.list.smoothScrolling": true
+}

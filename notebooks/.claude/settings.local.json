@@ -1,0 +1,8 @@
+{
+  "permissions": {
+    "allow": [
+      "Read(//g/My Drive/Research/bess_project/**)",
+      "Bash(pip show *)"
+    ]
+  }
+}

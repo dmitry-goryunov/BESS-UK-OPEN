@@ -1,0 +1,36 @@
+[
+  {
+    "case":"base_mu_range",
+    "selected":true,
+    "mu_xi":-0.05,
+    "kappa":1.1911585878,
+    "sigma_chi":1.4744979565,
+    "sigma_xi":0.1466816459,
+    "rho":-0.2173992077,
+    "sigma_obs":0.0958427175,
+    "log_likelihood":26969.9650661997,
+    "n_free_params":6,
+    "AIC":-53927.9301323994,
+    "BIC":-53878.1004645639,
+    "delta_loglik_vs_base":0.0,
+    "delta_AIC_vs_base":0.0,
+    "delta_BIC_vs_base":0.0
+  },
+  {
+    "case":"original_free_mu",
+    "selected":false,
+    "mu_xi":-0.1024438907,
+    "kappa":3.2833970416,
+    "sigma_chi":0.4841842356,
+    "sigma_xi":0.1995177496,
+    "rho":0.6134963513,
+    "sigma_obs":0.0954721807,
+    "log_likelihood":27310.5385723382,
+    "n_free_params":6,
+    "AIC":-54609.0771446763,
+    "BIC":-54559.2474768409,
+    "delta_loglik_vs_base":340.5735061385,
+    "delta_AIC_vs_base":-681.1470122769,
+    "delta_BIC_vs_base":-681.1470122769
+  }
+]

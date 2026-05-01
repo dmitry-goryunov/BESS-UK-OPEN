@@ -1,0 +1,209 @@
+{
+  "run_mode": "partial",
+  "n_paths": 250,
+  "n_steps": 240,
+  "valuation_horizon_years": 0.013699,
+  "annualization_factor": 73.0,
+  "asset_mw": 100.0,
+  "asset_mwh": 300.0,
+  "duration_h": 3.0,
+  "duration_label": "3h",
+  "mtm_gbp_horizon": {
+    "mean": 128210,
+    "std": 143530,
+    "p5": 24522,
+    "p50": 73273,
+    "p95": 394918
+  },
+  "mtm_gbp_annualized": {
+    "mean": 9359339,
+    "std": 10477673,
+    "p5": 1790081,
+    "p50": 5348934,
+    "p95": 28828994
+  },
+  "mtm_gbp_per_mw_horizon": {
+    "mean": 1282,
+    "p50": 733
+  },
+  "mtm_gbp_per_mw_year": {
+    "mean": 93593,
+    "std": 104777,
+    "p5": 17901,
+    "p50": 53489,
+    "p95": 288290
+  },
+  "ri_mean_gbp": 11491,
+  "ri_mean_gbp_annualized": 838878,
+  "ri_mean_gbp_per_mw_year": 8389,
+  "lsmc_ri_ratio": 11.157,
+  "v_lsmc_gte_v_ri": true,
+  "bwd_time_s": 1.1,
+  "fwd_time_s": 0.6,
+  "action_distribution": {
+    "total_decisions": 60000,
+    "mode_count": 12,
+    "unique_action_count": 10,
+    "dominant_action_index": 7,
+    "dominant_action_fraction": 0.7988666666666666,
+    "charge_fraction": 0.10826666666666666,
+    "discharge_fraction": 0.07091666666666667,
+    "idle_fraction": 0.8208166666666666,
+    "cashflow_mean_gbp": 534.5972290039062,
+    "by_mode": [
+      {
+        "index": 0,
+        "net_frac": -1.0,
+        "r_dc_frac": 0.0,
+        "r_qr_frac": 0.0,
+        "count": 1433,
+        "fraction": 0.023883333333333333,
+        "cashflow_mean_gbp": -4146.7060546875
+      },
+      {
+        "index": 1,
+        "net_frac": -0.5,
+        "r_dc_frac": 0.0,
+        "r_qr_frac": 0.0,
+        "count": 0,
+        "fraction": 0.0,
+        "cashflow_mean_gbp": null
+      },
+      {
+        "index": 2,
+        "net_frac": -0.5,
+        "r_dc_frac": 0.0,
+        "r_qr_frac": 0.25,
+        "count": 448,
+        "fraction": 0.007466666666666667,
+        "cashflow_mean_gbp": -2220.76025390625
+      },
+      {
+        "index": 3,
+        "net_frac": -0.5,
+        "r_dc_frac": 0.5,
+        "r_qr_frac": 0.0,
+        "count": 4615,
+        "fraction": 0.07691666666666666,
+        "cashflow_mean_gbp": -1975.2021484375
+      },
+      {
+        "index": 4,
+        "net_frac": 0.0,
+        "r_dc_frac": 0.0,
+        "r_qr_frac": 0.0,
+        "count": 7,
+        "fraction": 0.00011666666666666667,
+        "cashflow_mean_gbp": 0.0
+      },
+      {
+        "index": 5,
+        "net_frac": 0.0,
+        "r_dc_frac": 0.0,
+        "r_qr_frac": 0.25,
+        "count": 348,
+        "fraction": 0.0058,
+        "cashflow_mean_gbp": 49.1854362487793
+      },
+      {
+        "index": 6,
+        "net_frac": 0.0,
+        "r_dc_frac": 0.5,
+        "r_qr_frac": 0.0,
+        "count": 962,
+        "fraction": 0.016033333333333333,
+        "cashflow_mean_gbp": 131.2278289794922
+      },
+      {
+        "index": 7,
+        "net_frac": 0.0,
+        "r_dc_frac": 0.5,
+        "r_qr_frac": 0.25,
+        "count": 47932,
+        "fraction": 0.7988666666666666,
+        "cashflow_mean_gbp": 181.1116943359375
+      },
+      {
+        "index": 8,
+        "net_frac": 0.5,
+        "r_dc_frac": 0.0,
+        "r_qr_frac": 0.0,
+        "count": 0,
+        "fraction": 0.0,
+        "cashflow_mean_gbp": null
+      },
+      {
+        "index": 9,
+        "net_frac": 0.5,
+        "r_dc_frac": 0.0,
+        "r_qr_frac": 0.25,
+        "count": 113,
+        "fraction": 0.0018833333333333334,
+        "cashflow_mean_gbp": 5065.4267578125
+      },
+      {
+        "index": 10,
+        "net_frac": 0.5,
+        "r_dc_frac": 0.5,
+        "r_qr_frac": 0.0,
+        "count": 964,
+        "fraction": 0.016066666666666667,
+        "cashflow_mean_gbp": 5583.20068359375
+      },
+      {
+        "index": 11,
+        "net_frac": 1.0,
+        "r_dc_frac": 0.0,
+        "r_qr_frac": 0.0,
+        "count": 3178,
+        "fraction": 0.05296666666666667,
+        "cashflow_mean_gbp": 10493.8701171875
+      }
+    ],
+    "by_net_frac": {
+      "-1.00": {
+        "count": 1433,
+        "fraction": 0.023883333333333333
+      },
+      "-0.50": {
+        "count": 5063,
+        "fraction": 0.08438333333333334
+      },
+      "+0.00": {
+        "count": 49249,
+        "fraction": 0.8208166666666666
+      },
+      "+0.50": {
+        "count": 1077,
+        "fraction": 0.01795
+      },
+      "+1.00": {
+        "count": 3178,
+        "fraction": 0.05296666666666667
+      }
+    }
+  },
+  "action_q_diagnostics": {},
+  "lsmc_diagnostics": {
+    "regression_count": 5760.0,
+    "nonfinite_beta_count": 0.0,
+    "beta_abs_max": 1117108.6383615283,
+    "target_std_min": 69.55469730609302,
+    "target_std_max": 92232.43184498788,
+    "sampled_regression_count": 11.0,
+    "sample_rank_deficient_count": 0.0,
+    "sample_condition_max": 1066.0345379918472,
+    "active_feature_count_min": 1.0,
+    "active_feature_count_max": 9.0,
+    "fallback_lstsq_count": 0.0,
+    "fallback_zero_count": 0.0,
+    "continuation_clip_fraction_max": 0.0,
+    "continuation_clip_observation_count": 0.0,
+    "continuation_clip_observation_total": 1440000.0,
+    "continuation_clip_regression_count": 0.0,
+    "continuation_value_cap_gbp": 25000000.0,
+    "intraday_spread_std": 0.9296154379844666,
+    "continuation_clip_observation_fraction": 0.0,
+    "continuation_clip_regression_fraction": 0.0
+  }
+}
