@@ -64,8 +64,9 @@ BASIS_NAMES = [
     "delta_imb",
     "pi_dc", "pi_qr",
     "E", "E_sq", "E_x_Pda",
-    "sin_h", "cos_h",
-    "efa_block",
+    "P_da_x_delta",   # replaces sin_h  — cross-sectionally active
+    "P_da_x_dc",      # replaces cos_h
+    "dc_x_qr",        # replaces efa_block
 ]
 N_BASIS = len(BASIS_NAMES)   # 14
 
@@ -88,7 +89,6 @@ def basis_matrix(
     equations and create explosive continuation values.
     """
     N  = len(P_da)
-    h  = t_hh / 2.0   # convert to hour-of-day
 
     P = np.clip(P_da, -100.0, 500.0).astype(np.float32) / 100.0
     P_id = np.clip(P_id_spr, -200.0, 200.0).astype(np.float32) / 100.0
@@ -109,9 +109,9 @@ def basis_matrix(
     Phi[:, 8]  = E_scaled
     Phi[:, 9]  = E_scaled ** 2
     Phi[:, 10] = E_scaled * P
-    Phi[:, 11] = np.float32(np.sin(2 * np.pi * h / 24))
-    Phi[:, 12] = np.float32(np.cos(2 * np.pi * h / 24))
-    Phi[:, 13] = float(efa_block)
+    Phi[:, 11] = P * dlt    # P_da × delta_imb — price×imbalance interaction
+    Phi[:, 12] = P * dc     # P_da × pi_dc     — price×ancillary interaction
+    Phi[:, 13] = dc * qr    # pi_dc × pi_qr    — joint ancillary signal
 
     return Phi
 
@@ -463,14 +463,20 @@ class LSMCSolver:
                     Phi64 = Phi.astype(np.float64)
                     Y64 = Y.astype(np.float64)
                     y_std = float(np.std(Y64))
+                    # Normalise target to O(1) before the ridge solve.  This
+                    # keeps the normal-equation RHS at float64-safe magnitudes
+                    # and ensures the ridge penalty is applied on a consistent
+                    # scale regardless of how far back in time we are.  The
+                    # betas are un-normalised after solving so V_curr is in £.
+                    y_scale = max(y_std, 1.0)
+                    Y_norm = Y64 / y_scale
                     diagnostics["regression_count"] += 1
                     diagnostics["target_std_min"] = min(diagnostics["target_std_min"], y_std)
                     diagnostics["target_std_max"] = max(diagnostics["target_std_max"], y_std)
                     mu = Phi64.mean(axis=0)
                     raw_sd = Phi64.std(axis=0)
-                    # Within one regression E, hour trig terms, and EFA block
-                    # can be constant by construction. Drop those columns from
-                    # the fitted system and let the intercept absorb them.
+                    # Drop constant columns (E and any cross-product features
+                    # that happen to be zero-variance at this node/step).
                     active = np.ones(N_BASIS, dtype=bool)
                     active[1:] = raw_sd[1:] > 1e-8
                     active_count = int(np.sum(active))
@@ -489,7 +495,7 @@ class LSMCSolver:
                     ridge = reg * np.eye(active_count)
                     ridge[0, 0] = 0.0
                     PhiT_Phi = Z.T @ Z + ridge
-                    PhiT_Y = Z.T @ Y64
+                    PhiT_Y = Z.T @ Y_norm
                     do_sample_diag = (diagnostics["regression_count"] % diag_stride) == 0
                     if do_sample_diag:
                         diagnostics["sampled_regression_count"] += 1
@@ -513,8 +519,9 @@ class LSMCSolver:
                     gamma = np.zeros(N_BASIS, dtype=np.float64)
                     gamma[active] = gamma_active
                     b = np.zeros(N_BASIS, dtype=np.float64)
-                    b[active] = gamma_active / sd[active]
-                    b[0] = gamma[0] - np.sum(gamma[1:] * mu[1:] / sd[1:])
+                    # Undo feature standardisation then undo target normalisation
+                    b[active] = gamma_active * y_scale / sd[active]
+                    b[0] = (gamma[0] - np.sum(gamma[1:] * mu[1:] / sd[1:])) * y_scale
                     if not np.all(np.isfinite(b)):
                         diagnostics["nonfinite_beta_count"] += 1
                     beta_abs_max = float(np.nanmax(np.abs(b))) if b.size else 0.0
@@ -732,17 +739,15 @@ class LSMCSolver:
                 cont = np.zeros((N, M), dtype=np.float32)
             else:
                 t_next = t + 1
-                t_next_hh = t_next % 48
-                efa_next = int(self._efa[t_next_hh])
                 P_next = P_da_all[:, t_next]
                 P_c_next = np.clip(P_next, -100.0, 500.0).astype(np.float32) / 100.0
                 dlt_c_next = np.clip(delta_all[:, t_next], -500.0, 500.0).astype(np.float32) / 100.0
                 dc_c_next = np.clip(pi_dc_all[:, t_next], 0.0, 100.0).astype(np.float32) / 20.0
                 qr_c_next = np.clip(pi_qr_all[:, t_next], 0.0, 100.0).astype(np.float32) / 20.0
                 p_id_c_next = np.clip(P_id_spr_all[:, t_next], -200.0, 200.0).astype(np.float32) / 100.0
-                sin_next = np.float32(np.sin(2 * np.pi * (t_next_hh / 2.0) / 24))
-                cos_next = np.float32(np.cos(2 * np.pi * (t_next_hh / 2.0) / 24))
 
+                # phi_next_base mirrors basis_matrix() columns [0:8] + [11:13]
+                # (the E-based columns 8-10 are computed below using E_next_nm)
                 phi_next_base = np.empty((N, 11), dtype=np.float32)
                 phi_next_base[:, 0] = 1.0
                 phi_next_base[:, 1] = P_c_next
@@ -752,9 +757,9 @@ class LSMCSolver:
                 phi_next_base[:, 5] = dlt_c_next
                 phi_next_base[:, 6] = dc_c_next
                 phi_next_base[:, 7] = qr_c_next
-                phi_next_base[:, 8] = sin_next
-                phi_next_base[:, 9] = cos_next
-                phi_next_base[:, 10] = float(efa_next)
+                phi_next_base[:, 8]  = P_c_next * dlt_c_next   # P_da_x_delta
+                phi_next_base[:, 9]  = P_c_next * dc_c_next    # P_da_x_dc
+                phi_next_base[:, 10] = dc_c_next * qr_c_next   # dc_x_qr
 
                 j_next_nm = np.clip(
                     np.searchsorted(self.soc_grid, E_next_nm, side='right') - 1,

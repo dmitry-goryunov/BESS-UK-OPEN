@@ -1,7 +1,7 @@
 {
   "2h": {
     "as_of_date": "2026-03-06",
-    "generated_at": "2026-04-30",
+    "generated_at": "2026-05-01",
     "fx_gbp_eur": 1.18,
     "unit": "kEUR/MW/yr",
     "asset": {
@@ -11,10 +11,10 @@
       "capex_gbp_m": 44.0
     },
     "total_value": {
-      "mean": 134.0,
-      "p5": 65.7,
-      "p50": 128.9,
-      "p95": 220.2,
+      "mean": 27.3,
+      "p5": 2.8,
+      "p50": 23.6,
+      "p95": 61.9,
       "horizon_years": 0.247,
       "n_paths": 1000
     },
@@ -34,7 +34,7 @@
         "vom": 2.9,
         "optim": 2.3,
         "fom": 9.5,
-        "cycles": 490,
+        "cycles": 489,
         "in_fwd": true
       },
       {

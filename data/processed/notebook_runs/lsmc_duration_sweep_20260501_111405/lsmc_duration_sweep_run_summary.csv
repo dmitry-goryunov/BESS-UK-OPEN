@@ -1,0 +1,17 @@
+scenario,duration_h,duration_label,returncode,elapsed_s,executed_notebook,summary_json,skipped,skip_reason
+energy_only,0.5,0.5h,0,0.0,04_lsmc_valuation_energy_only_0.5h.executed.ipynb,lsmc_valuation_summary_energy_only_0.5h.json,True,completed
+energy_only,1.0,1h,0,0.0,04_lsmc_valuation_energy_only_1h.executed.ipynb,lsmc_valuation_summary_energy_only_1h.json,True,completed
+energy_only,1.5,1.5h,0,0.0,04_lsmc_valuation_energy_only_1.5h.executed.ipynb,lsmc_valuation_summary_energy_only_1.5h.json,True,completed
+energy_only,2.0,2h,0,0.0,04_lsmc_valuation_energy_only_2h.executed.ipynb,lsmc_valuation_summary_energy_only_2h.json,True,completed
+energy_only,2.5,2.5h,0,0.0,04_lsmc_valuation_energy_only_2.5h.executed.ipynb,lsmc_valuation_summary_energy_only_2.5h.json,True,completed
+energy_only,3.0,3h,0,0.0,04_lsmc_valuation_energy_only_3h.executed.ipynb,lsmc_valuation_summary_energy_only_3h.json,True,completed
+energy_only,3.5,3.5h,0,0.0,04_lsmc_valuation_energy_only_3.5h.executed.ipynb,lsmc_valuation_summary_energy_only_3.5h.json,True,completed
+energy_only,4.0,4h,0,0.0,04_lsmc_valuation_energy_only_4h.executed.ipynb,lsmc_valuation_summary_energy_only_4h.json,True,completed
+cooptimised,0.5,0.5h,0,0.0,04_lsmc_valuation_cooptimised_0.5h.executed.ipynb,lsmc_valuation_summary_cooptimised_0.5h.json,True,completed
+cooptimised,1.0,1h,0,0.0,04_lsmc_valuation_cooptimised_1h.executed.ipynb,lsmc_valuation_summary_cooptimised_1h.json,True,completed
+cooptimised,1.5,1.5h,0,0.0,04_lsmc_valuation_cooptimised_1.5h.executed.ipynb,lsmc_valuation_summary_cooptimised_1.5h.json,True,completed
+cooptimised,2.0,2h,0,0.0,04_lsmc_valuation_cooptimised_2h.executed.ipynb,lsmc_valuation_summary_cooptimised_2h.json,True,completed
+cooptimised,2.5,2.5h,0,0.0,04_lsmc_valuation_cooptimised_2.5h.executed.ipynb,lsmc_valuation_summary_cooptimised_2.5h.json,True,completed
+cooptimised,3.0,3h,0,182.98776006698608,04_lsmc_valuation_cooptimised_3h.executed.ipynb,lsmc_valuation_summary_cooptimised_3h.json,False,
+cooptimised,3.5,3.5h,0,135.76175451278687,04_lsmc_valuation_cooptimised_3.5h.executed.ipynb,lsmc_valuation_summary_cooptimised_3.5h.json,False,
+cooptimised,4.0,4h,0,216.21085238456726,04_lsmc_valuation_cooptimised_4h.executed.ipynb,lsmc_valuation_summary_cooptimised_4h.json,False,
