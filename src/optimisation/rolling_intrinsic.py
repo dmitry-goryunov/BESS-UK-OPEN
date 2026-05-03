@@ -29,9 +29,40 @@ from __future__ import annotations
 
 import os
 from concurrent.futures import ProcessPoolExecutor, ThreadPoolExecutor, as_completed
+from functools import lru_cache
 
 import numpy as np
 from typing import Optional
+
+
+@lru_cache(maxsize=32)
+def _daily_lp_template(
+    T: int,
+    P_bar: float,
+    eta_c: float,
+    eta_d: float,
+    dt_h: float,
+) -> tuple[np.ndarray, tuple[tuple[float, float], ...]]:
+    """Build reusable LP constraints for a fixed window and asset."""
+    n_vars = 2 * T
+
+    A_power = np.zeros((T, n_vars), dtype=np.float64)
+    idx = np.arange(T)
+    A_power[idx, idx] = 1.0
+    A_power[idx, T + idx] = 1.0
+
+    tril = np.tril(np.ones((T, T), dtype=np.float64))
+    A_Eup = np.zeros((T, n_vars), dtype=np.float64)
+    A_Eup[:, :T] = -dt_h / eta_d * tril
+    A_Eup[:, T:] = dt_h * eta_c * tril
+
+    A_Elo = np.zeros((T, n_vars), dtype=np.float64)
+    A_Elo[:, :T] = dt_h / eta_d * tril
+    A_Elo[:, T:] = -dt_h * eta_c * tril
+
+    A_ub = np.vstack([A_power, A_Eup, A_Elo])
+    bounds = ((0.0, P_bar),) * n_vars
+    return A_ub, bounds
 
 
 def solve_daily_lp(
@@ -68,47 +99,11 @@ def solve_daily_lp(
          prices * dt_h,   # +cost of charge (c)
     ])
 
-    # Inequality constraints: A_ub @ x <= b_ub
-    # 1. Power: d[t] + c[t] <= P_bar  (no simultaneous charge/discharge)
-    n_vars = 2 * T
-    rows_power = []
-    for t in range(T):
-        row = np.zeros(n_vars)
-        row[t]     = 1.0   # d[t]
-        row[T + t] = 1.0   # c[t]
-        rows_power.append(row)
-    A_power = np.array(rows_power)
+    A_ub, bounds = _daily_lp_template(T, P_bar, eta_c, eta_d, dt_h)
     b_power = np.full(T, P_bar)
-
-    # 2. Energy upper bound: E[t+1] <= E_max
-    # E[t+1] = E[t] + c[t]*eta_c*dt - d[t]/eta_d*dt
-    # Cumulative: E_init + sum_{s<=t} (c[s]*eta_c - d[s]/eta_d)*dt <= E_max
-    rows_Eup = []
-    for t in range(T):
-        row = np.zeros(n_vars)
-        for s in range(t + 1):
-            row[s]     = -dt_h / eta_d    # discharge reduces E
-            row[T + s] =  dt_h * eta_c    # charge increases E
-        rows_Eup.append(row)
-    A_Eup = np.array(rows_Eup)
     b_Eup = np.full(T, E_max - E_init)
-
-    # 3. Energy lower bound: E[t+1] >= E_min  i.e. -E[t+1] <= -E_min
-    rows_Elo = []
-    for t in range(T):
-        row = np.zeros(n_vars)
-        for s in range(t + 1):
-            row[s]     =  dt_h / eta_d   # negate: discharge increases -E
-            row[T + s] = -dt_h * eta_c
-        rows_Elo.append(row)
-    A_Elo = np.array(rows_Elo)
-    b_Elo = np.full(T, -(E_min - E_init))
-
-    A_ub = np.vstack([A_power, A_Eup, A_Elo])
+    b_Elo = np.full(T, E_init - E_min)
     b_ub = np.concatenate([b_power, b_Eup, b_Elo])
-
-    # Bounds: 0 <= d[t], c[t] <= P_bar
-    bounds = [(0.0, P_bar)] * n_vars
 
     result = linprog(
         c_obj, A_ub=A_ub, b_ub=b_ub, bounds=bounds,

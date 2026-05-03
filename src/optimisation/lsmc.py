@@ -126,21 +126,30 @@ class Policy:
     Regression coefficients from the backward pass.
 
     beta[t, j, k] is the (N_BASIS,) coefficient vector for time step t,
-    SoC grid index j, and SoH node index k.
+    SoC grid index j, and SoH node index k.  Used for V_curr propagation
+    and (legacy) anticipative forward evaluation.
+
+    cont_beta[t, j, k, m] is the (N_BASIS,) coefficient vector that
+    approximates E[V(t+1, E_next_m) | S(t), SoC ≈ grid[j], SoH = k]
+    (undiscounted next-step value, symmetric with beta).
+    When present, forward() uses this for a non-anticipative action choice
+    (dispatch at t sees only S(t), not S(t+1)).
 
     Shapes:
         beta      : (n_steps, n_soc_nodes, n_soh_nodes, N_BASIS)
+        cont_beta : (n_steps, n_soc_nodes, n_soh_nodes, n_modes, N_BASIS) or None
         soc_grid  : (n_soc_nodes,) — MWh
         soh_nodes : (n_soh_nodes,) — fraction
         dt_h      : float — half-hour step in hours
     """
-    beta:       np.ndarray    # (T, J, K, 14)
-    soc_grid:   np.ndarray    # (J,)
-    soh_nodes:  np.ndarray    # (K,)
+    beta:       np.ndarray             # (T, J, K, 14)
+    soc_grid:   np.ndarray             # (J,)
+    soh_nodes:  np.ndarray             # (K,)
     modes:      List[DispatchMode]
     dt_h:       float
     n_steps:    int
     n_paths:    int
+    cont_beta:  Optional[np.ndarray] = None   # (T, J, K, M, 14); None → legacy
     diagnostics: Dict[str, float] = field(default_factory=dict)
 
 
@@ -344,7 +353,8 @@ class LSMCSolver:
                   f"J={J} SoC nodes, K={K} SoH nodes, M={M} modes")
 
         # Coefficient store
-        beta = np.zeros((T, J, K, N_BASIS), dtype=np.float32)
+        beta      = np.zeros((T, J, K,    N_BASIS), dtype=np.float32)
+        cont_beta = np.zeros((T, J, K, M, N_BASIS), dtype=np.float32)
         diagnostics = {
             "regression_count": 0,
             "nonfinite_beta_count": 0,
@@ -531,6 +541,34 @@ class LSMCSolver:
                         np.isfinite(b), b, 0.0
                     ).astype(np.float32)
 
+                    # Per-mode continuation regression on current-state features.
+                    # Regress undiscounted V(t+1, E_next_m) on phi(S(t)) for every
+                    # mode m simultaneously.  forward() then applies disc once via
+                    # Q = CF + disc * cont, avoiding the double-discount that arose
+                    # when this target was disc*V_cont (B1 fix).
+                    V_disc64 = V_cont.astype(np.float64)                 # (N, M)
+                    v_scales = np.maximum(V_disc64.std(axis=0), 1.0)     # (M,)
+                    V_disc_norm = V_disc64 / v_scales[None, :]            # (N, M)
+                    PhiT_V = Z.T @ V_disc_norm                            # (active, M)
+                    try:
+                        gamma_cont_a = np.linalg.solve(PhiT_Phi, PhiT_V)
+                        if not np.all(np.isfinite(gamma_cont_a)):
+                            gamma_cont_a = np.zeros((active_count, M))
+                    except np.linalg.LinAlgError:
+                        gamma_cont_a = np.zeros((active_count, M))
+                    gamma_cont = np.zeros((N_BASIS, M), dtype=np.float64)
+                    gamma_cont[active, :] = gamma_cont_a
+                    b_cont = np.zeros((N_BASIS, M), dtype=np.float64)
+                    b_cont[active, :] = (
+                        gamma_cont_a * v_scales[None, :] / sd[active, None]
+                    )
+                    b_cont[0, :] = (
+                        gamma_cont[0, :]
+                        - np.sum(gamma_cont[1:, :] * (mu[1:] / sd[1:])[:, None], axis=0)
+                    ) * v_scales
+                    b_cont = np.where(np.isfinite(b_cont), b_cont, 0.0)
+                    cont_beta[t, j, k_idx, :, :] = b_cont.T.astype(np.float32)
+
                     # Update V_next at this node for the NEXT backward step (t-1)
                     raw_cont = Phi @ b
                     clip_mask = (
@@ -581,6 +619,7 @@ class LSMCSolver:
 
         return Policy(
             beta      = beta,
+            cont_beta = cont_beta,
             soc_grid  = self.soc_grid,
             soh_nodes = self.soh_nodes,
             modes     = self.modes,
@@ -737,7 +776,39 @@ class LSMCSolver:
             E_next_nm = self._E_next_jkm[j_arr, k_arr, :]   # (N, M)
             if t + 1 >= T:
                 cont = np.zeros((N, M), dtype=np.float32)
+            elif policy.cont_beta is not None:
+                # Non-anticipative: evaluate per-mode continuation regressions
+                # fitted on S(t) during backward induction.  No t+1 price data.
+                P_c   = np.clip(P_da, -100.0, 500.0).astype(np.float32) / 100.0
+                dlt_c = np.clip(delta, -500.0, 500.0).astype(np.float32) / 100.0
+                dc_c  = np.clip(pi_dc,  0.0, 100.0).astype(np.float32) / 20.0
+                qr_c  = np.clip(pi_qr,  0.0, 100.0).astype(np.float32) / 20.0
+                p_id_c = np.clip(P_id_spr_all[:, t], -200.0, 200.0).astype(np.float32) / 100.0
+                E_sc  = (E_n / 100.0).astype(np.float32)
+                phi_t = np.empty((N, N_BASIS), dtype=np.float32)
+                phi_t[:, 0]  = 1.0
+                phi_t[:, 1]  = P_c
+                phi_t[:, 2]  = P_c ** 2
+                phi_t[:, 3]  = P_c ** 3
+                phi_t[:, 4]  = p_id_c
+                phi_t[:, 5]  = dlt_c
+                phi_t[:, 6]  = dc_c
+                phi_t[:, 7]  = qr_c
+                phi_t[:, 8]  = E_sc
+                phi_t[:, 9]  = E_sc ** 2
+                phi_t[:, 10] = P_c * E_sc
+                phi_t[:, 11] = P_c * dlt_c
+                phi_t[:, 12] = P_c * dc_c
+                phi_t[:, 13] = dc_c * qr_c
+                # cont_beta[t, j, k, m, :] · phi(S(t)) → (N, M)
+                cb = policy.cont_beta[t, j_arr, k_arr, :, :]   # (N, M, 14)
+                cont = np.clip(
+                    np.einsum('nmb,nb->nm', cb, phi_t),
+                    -self.continuation_cap,
+                    self.continuation_cap,
+                ).astype(np.float32)
             else:
+                # Legacy anticipative fallback for policies saved without cont_beta.
                 t_next = t + 1
                 P_next = P_da_all[:, t_next]
                 P_c_next = np.clip(P_next, -100.0, 500.0).astype(np.float32) / 100.0
@@ -745,9 +816,6 @@ class LSMCSolver:
                 dc_c_next = np.clip(pi_dc_all[:, t_next], 0.0, 100.0).astype(np.float32) / 20.0
                 qr_c_next = np.clip(pi_qr_all[:, t_next], 0.0, 100.0).astype(np.float32) / 20.0
                 p_id_c_next = np.clip(P_id_spr_all[:, t_next], -200.0, 200.0).astype(np.float32) / 100.0
-
-                # phi_next_base mirrors basis_matrix() columns [0:8] + [11:13]
-                # (the E-based columns 8-10 are computed below using E_next_nm)
                 phi_next_base = np.empty((N, 11), dtype=np.float32)
                 phi_next_base[:, 0] = 1.0
                 phi_next_base[:, 1] = P_c_next
@@ -757,10 +825,9 @@ class LSMCSolver:
                 phi_next_base[:, 5] = dlt_c_next
                 phi_next_base[:, 6] = dc_c_next
                 phi_next_base[:, 7] = qr_c_next
-                phi_next_base[:, 8]  = P_c_next * dlt_c_next   # P_da_x_delta
-                phi_next_base[:, 9]  = P_c_next * dc_c_next    # P_da_x_dc
-                phi_next_base[:, 10] = dc_c_next * qr_c_next   # dc_x_qr
-
+                phi_next_base[:, 8]  = P_c_next * dlt_c_next
+                phi_next_base[:, 9]  = P_c_next * dc_c_next
+                phi_next_base[:, 10] = dc_c_next * qr_c_next
                 j_next_nm = np.clip(
                     np.searchsorted(self.soc_grid, E_next_nm, side='right') - 1,
                     0,
@@ -965,11 +1032,52 @@ class LSMCSolver:
         if old_verbose:
             print()
 
-        pv_paths = np.concatenate([r.pv_paths for r in results])
+        pv_paths      = np.concatenate([r.pv_paths      for r in results])
         cashflow_paths = np.concatenate([r.cashflow_paths for r in results], axis=0)
-        soc_paths = np.concatenate([r.soc_paths for r in results], axis=0)
-        soh_paths = np.concatenate([r.soh_paths for r in results], axis=0)
-        action_paths = np.concatenate([r.action_paths for r in results], axis=0)
+        soc_paths     = np.concatenate([r.soc_paths     for r in results], axis=0)
+        soh_paths     = np.concatenate([r.soh_paths     for r in results], axis=0)
+        action_paths  = np.concatenate([r.action_paths  for r in results], axis=0)
+
+        efc_total = float(np.mean(
+            np.sum(np.maximum(-np.diff(soc_paths, axis=1), 0.0), axis=1)
+            / max(self.E_name, 1.0)
+        ))
+
+        # Merge action_diagnostics: sum counts, weight-average means.
+        diag_list = [r.action_diagnostics for r in results if r.action_diagnostics]
+        if diag_list:
+            total_decisions = sum(d.get("total_decisions", 0) for d in diag_list)
+            def _wt_mean(key: str) -> float:
+                return (
+                    sum(d.get(key, 0.0) * d.get("total_decisions", 0) for d in diag_list)
+                    / max(total_decisions, 1)
+                )
+            merged_diag: Dict[str, object] = {
+                "total_decisions": total_decisions,
+                "selected_cashflow_mean_gbp": _wt_mean("selected_cashflow_mean_gbp"),
+                "selected_continuation_mean_gbp": _wt_mean("selected_continuation_mean_gbp"),
+                "selected_q_mean_gbp": _wt_mean("selected_q_mean_gbp"),
+            }
+            # Merge per-mode counts (each chunk has same mode ordering)
+            if diag_list[0].get("by_mode"):
+                n_modes = len(diag_list[0]["by_mode"])
+                by_mode = []
+                for m_idx in range(n_modes):
+                    m_count = sum(
+                        d["by_mode"][m_idx]["count"] for d in diag_list
+                        if m_idx < len(d.get("by_mode", []))
+                    )
+                    first_entry = diag_list[0]["by_mode"][m_idx]
+                    by_mode.append({
+                        "index": first_entry["index"],
+                        "net_frac": first_entry["net_frac"],
+                        "r_dc_frac": first_entry["r_dc_frac"],
+                        "r_qr_frac": first_entry["r_qr_frac"],
+                        "count": m_count,
+                    })
+                merged_diag["by_mode"] = by_mode
+        else:
+            merged_diag = {}
 
         return ValuationResult(
             pv_paths=pv_paths,
@@ -981,7 +1089,8 @@ class LSMCSolver:
             mtm_std=float(np.std(pv_paths)),
             mtm_p5=float(np.percentile(pv_paths, 5)),
             mtm_p95=float(np.percentile(pv_paths, 95)),
-            efc_total=float(np.mean(np.abs(action_paths).astype(float))),
+            efc_total=efc_total,
+            action_diagnostics=merged_diag,
         )
 
 

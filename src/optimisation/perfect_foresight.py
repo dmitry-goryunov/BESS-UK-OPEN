@@ -45,7 +45,9 @@ def solve_perfect_foresight(
         e[t+1] = e[t] + eta_c * c[t] * dt - d[t] / eta_d * dt
 
     The LP also imposes d[t] + c[t] <= power_mw to avoid simultaneous full
-    charge/discharge in the same half-hour.
+    charge/discharge in the same half-hour. If terminal_soc_mwh is provided,
+    the final SoC is fixed to that value; otherwise it is left free within the
+    battery SoC bounds.
     """
     price = np.asarray(prices, dtype=float)
     mask = np.isfinite(price)
@@ -66,7 +68,6 @@ def solve_perfect_foresight(
         if initial_soc_mwh is not None
         else float(asset_cfg.get("soc_init_frac", 0.5)) * e_name
     )
-    e_terminal = e_init if terminal_soc_mwh is None else float(terminal_soc_mwh)
     vom = float(asset_cfg.get("vom_gbp_mwh", 0.0) if vom_gbp_mwh is None else vom_gbp_mwh)
 
     n_d = T
@@ -85,7 +86,9 @@ def solve_perfect_foresight(
 
     bounds = [(0.0, p_mw)] * (n_d + n_c) + [(e_min, e_max)] * n_e
     bounds[off_e] = (e_init, e_init)
-    bounds[off_e + T] = (e_terminal, e_terminal)
+    if terminal_soc_mwh is not None:
+        e_terminal = float(terminal_soc_mwh)
+        bounds[off_e + T] = (e_terminal, e_terminal)
 
     # Equality constraints: one initial condition row plus T transition rows.
     a_eq = lil_matrix((T + 1, n_vars))

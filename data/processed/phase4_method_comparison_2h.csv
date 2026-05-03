@@ -1,0 +1,6 @@
+duration_h,run_mode,method,value_gbp_horizon_mean,value_gbp_annualized_mean,gbp_per_mw_year,n_paths,window_hh,gate_hh,notes,value_gbp_annualized_m,gbp_per_mw_year_k
+2.0,medium,Initial hourly intrinsic,1857943.2997705936,1857943.2997705936,18579.432997705935,1,24,24,HPFC hourly daily LP; 5-year annual average gross revenue,1.8579432997705936,18.579432997705936
+2.0,medium,DA rolling intrinsic,730500.9452253353,2962587.166747193,29625.87166747193,50,48,48,HPFC-anchored simulated DA paths; rolling deterministic LP benchmark,2.962587166747193,29.62587166747193
+2.0,medium,WD rolling intrinsic,730507.3655922556,2962613.2049019253,29626.132049019252,50,48,8,HPFC-anchored simulated DA paths; rolling deterministic LP benchmark,2.9626132049019254,29.62613204901925
+2.0,medium,Forward simulation,1426289.9496743279,5784398.129234774,57843.981292347744,500,0,0,LSMC policy on HPFC-anchored disjoint simulated paths,5.784398129234774,57.84398129234774
+2.0,medium,Perfect foresight,738731.8404793515,2995968.019721814,29959.68019721814,50,4320,4320,Full-horizon gross-energy LP on sampled HPFC-anchored DA paths; terminal SoC free,2.995968019721814,29.959680197218137
