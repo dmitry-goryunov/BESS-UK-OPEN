@@ -1,45 +1,95 @@
-# BESS UK Valuation Dashboard
+# BESS UK Valuation Framework
 
-Streamlit dashboard for the important outputs and graphs from the BESS UK
-stochastic valuation notebooks `01`-`07`.
+Stochastic mark-to-market valuation for fast-cycle battery energy storage in Great Britain (1–4 hours).
 
-The published repository is intentionally small: it contains the Streamlit app,
-processed output files, and this README. The research notebooks and modelling
-source code remain local working files and are not needed to view the dashboard.
+This repository contains:
+1. **Streamlit dashboard** — Comprehensive BESS valuation outputs (all phases)
+2. **Phase 4 Streamlit app** — Interactive duration sweep analysis (method comparison & attribution)
+3. **Processed output files** — All valuation results, charts, and diagnostics
+4. **Documentation** — Methodology, assumptions, and usage guides
 
-## Dashboard Contents
+The research notebooks and modelling source code remain local; they are not needed to view the dashboards.
 
-| Tab | Source output |
+## 📊 Dashboards
+
+### 1. Main BESS Dashboard (`streamlit_app.py`)
+
+Comprehensive outputs from all phases (1–7):
+
+| Tab | Contents |
 |---|---|
-| Overview | Headline LSMC, MTM, risk, backtest, and perfect-foresight outputs |
-| Calibration | `ss_params.json`, `pca_params.json`, `imbalance_params.json`, `ancillary_params.json` |
-| Simulation | `sim_summary.json` and simulation diagnostic charts |
-| LSMC | Duration-labelled `lsmc_valuation_summary_<hours>.json`, `lsmc_valuation_<hours>.png` |
-| MTM Risk | Duration-labelled `mtm_summary_<hours>.json`, MTM, Greeks, VaR/CVaR, stress and SOH charts |
-| Backtest | Duration-labelled `phase6_summary_<hours>.json`, dual-bound and P&L attribution charts |
-| Perfect Foresight | Duration-labelled `perfect_foresight_summary_<hours>.json`, dispatch parquet, high-value week chart |
-| Files | Inventory and raw JSON viewer for published outputs |
+| **Overview** | Headline LSMC, MTM, risk, backtest, perfect-foresight |
+| **Calibration** | Schwartz-Smith, PCA, imbalance, ancillary parameters |
+| **Simulation** | Sample paths, cross-correlation, diagnostic charts |
+| **LSMC** | Duration-specific valuation results and charts |
+| **MTM Risk** | Greeks (delta, vega, rho), VaR, CVaR, stress tests, SoH |
+| **Backtest** | P&L attribution, dual bounds, execution analysis |
+| **Perfect Foresight** | Upper-bound benchmarks, dispatch dispatch analysis |
+| **Files** | Inventory and raw JSON viewer |
 
-## Run Locally
+### 2. Phase 4 Duration Sweep App (`streamlit_phase4_sweep.py`) ⭐
 
+Interactive **method comparison & revenue attribution** across 1h–4h durations:
+
+| View | Purpose |
+|---|---|
+| **Overview** | Key metrics and findings |
+| **Method Comparison** | Line/bar charts of 5 valuation methods by duration |
+| **Attribution Analysis** | Revenue breakdown by component (HPFC, DA, ancillary, costs) |
+| **Detailed Tables** | Full data tables (downloadable CSV) |
+| **Run Diagnostics** | Execution logs, file inventory, regeneration instructions |
+
+**See:** [STREAMLIT_PHASE4_APP.md](docs/STREAMLIT_PHASE4_APP.md) for full documentation.
+
+## 🚀 Run Dashboards Locally
+
+### Main Dashboard
 ```bash
 pip install -r requirements.txt
 streamlit run streamlit_app.py
 ```
 
-## Published Files
-
-```text
-streamlit_app.py
-requirements.txt
-README.md
-data/processed/
+### Phase 4 Duration Sweep
+```bash
+streamlit run streamlit_phase4_sweep.py
 ```
 
-## Notes
+Both will open at `http://localhost:8501` by default.
 
-These outputs are research artifacts. Phase 4-6 are saved from the current
-fast-development partial mode rather than a final production solve. The
-perfect-foresight benchmark is an upper benchmark and is not a tradable
-strategy. The Phase 5 optimiser fee is shown as an assumed 12% negotiated
-share of gross positive merchant revenue.
+## 📦 Repository Contents
+
+### Streamlit Apps
+- `streamlit_app.py` — Main BESS valuation dashboard
+- `streamlit_phase4_sweep.py` — Phase 4 duration sweep analysis ⭐ **New!**
+
+### Documentation
+- `README.md` — This file
+- `docs/STREAMLIT_PHASE4_APP.md` — Phase 4 app guide
+- `docs/stochastic_plan.md` — Full methodology
+- `docs/pricing_items.md` — Priceable revenue components
+- `docs/revenue_stack.md` — GB market assumptions
+- `CLAUDE.md` — Project context (for AI assistants)
+
+### Data
+- `data/processed/` — All output files, charts, JSON summaries
+- `requirements.txt` — Python dependencies
+
+## 📝 Notes
+
+These outputs are research artifacts from stochastic valuation of a 50 MW / 100 MWh (2h nominal) fast-cycle BESS asset.
+
+**Phases 1–3:** Data pipeline, calibration, simulation  
+**Phase 4:** Duration sweep – method comparison for 1h, 2h, 3h, 4h duration batteries  
+**Phases 5–7:** MTM risk (Greeks, VaR, CVaR), backtest attribution, perfect-foresight benchmark
+
+### Phase 4 Highlights
+- Compares 5 valuation methods: intrinsic, rolling, LSMC, perfect foresight
+- Duration sweep: 1h, 2h, 3h, 4h batteries
+- Revenue attribution: HPFC anchor, DA surprise, intraday, DC/QR ancillary, costs
+- **App:** `streamlit_phase4_sweep.py` — Interactive dashboard with filtering, drill-down, CSV export
+
+### Important Caveats
+- Perfect-foresight is an **upper-bound benchmark**, not a tradable strategy
+- Optimiser fee: assumed 12% of gross positive merchant revenue
+- SoH augmentation: modelled at years 4, 8, 12 of asset life
+- All outputs research/illustrative; not for investment decisions
