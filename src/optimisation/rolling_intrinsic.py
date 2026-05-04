@@ -122,21 +122,23 @@ def solve_daily_lp(
 
 
 def rolling_intrinsic(
-    P_da_paths: np.ndarray,   # (N_paths, T) DA prices
+    P_da_paths: np.ndarray,              # (N_paths, T) DA prices
     asset_cfg:  dict,
     lsmc_cfg:   dict,
     fin_cfg:    dict,
     E_init_frac: float = 0.5,
-    window_hh:  int   = 48,   # re-optimise every 48 HH (daily)
-    gate_hh:    int   = 8,    # re-solve every 8 HH (EFA gate, every 4h)
+    window_hh:  int   = 48,             # look-ahead window
+    gate_hh:    int   = 8,              # re-solve cadence
     verbose:    bool  = True,
+    delta_imb_paths: Optional[np.ndarray] = None,  # (N_paths, T) intraday basis
 ) -> tuple:
     """
     Rolling intrinsic valuation over N_paths price scenarios.
 
-    At each EFA gate (every `gate_hh` steps), solve the LP over the next
-    `window_hh` half-hours. Apply the first `gate_hh` dispatch decisions;
-    advance; repeat.
+    If delta_imb_paths is provided (WD mode), the LP at each gate sees
+    P_da + delta_imb for the committed gate_hh periods (intraday price
+    visibility) and P_da only for the remaining look-ahead.  Cashflow is
+    settled at the realized intraday price P_da + delta_imb.
 
     Returns
     -------
@@ -164,33 +166,39 @@ def rolling_intrinsic(
 
     for n in range(N):
         if verbose and n % max(1, N // 10) == 0:
-            print(f"  RI path {n}/{N} ...", end='\r')
+            print(f"  RI path {n}/{N} ...", end='\r', flush=True)
 
         E_n  = E_init
         t    = 0
         while t < T:
-            # DA price window
-            t_end   = min(t + window_hh, T)
-            prices  = P_da_paths[n, t:t_end]
-            win_len = len(prices)
+            t_end  = min(t + window_hh, T)
+            prices = P_da_paths[n, t:t_end].copy()
 
-            # Solve LP
+            # WD: use current intraday basis (delta_imb[t]) projected flat across
+            # the gate window for optimization — no within-gate foresight.
+            # Cashflow settles at realized per-period prices below.
+            if delta_imb_paths is not None:
+                near = min(gate_hh, len(prices))
+                prices[:near] = prices[:near] + delta_imb_paths[n, t]
+
             d_opt, c_opt, _ = solve_daily_lp(
                 prices, E_n, E_min, E_max, P_bar, eta_c, eta_d, dt_h,
             )
 
-            # Apply first `gate_hh` decisions
             apply_len = min(gate_hh, T - t)
             for s in range(apply_len):
                 d_s = float(d_opt[s]) if s < len(d_opt) else 0.0
                 c_s = float(c_opt[s]) if s < len(c_opt) else 0.0
 
-                cf_store[n, t + s] = float(
-                    (P_da_paths[n, t + s] * (d_s - c_s)) * dt_h
-                )
+                step = t + s
+                realized = float(P_da_paths[n, step])
+                if delta_imb_paths is not None:
+                    realized += float(delta_imb_paths[n, step])
+
+                cf_store[n, step] = float(realized * (d_s - c_s) * dt_h)
                 dE = (-d_s / eta_d + c_s * eta_c) * dt_h
                 E_n = float(np.clip(E_n + dE, E_min, E_max))
-                soc_store[n, t + s + 1] = E_n
+                soc_store[n, step + 1] = E_n
 
             t += apply_len
 
@@ -211,6 +219,7 @@ def _rolling_intrinsic_one_path(args) -> tuple:
         E_init_frac,
         window_hh,
         gate_hh,
+        delta_imb_path,   # (T,) intraday basis or None
     ) = args
 
     T     = len(prices_path)
@@ -231,8 +240,14 @@ def _rolling_intrinsic_one_path(args) -> tuple:
 
     t = 0
     while t < T:
-        t_end = min(t + window_hh, T)
-        prices = prices_path[t:t_end]
+        t_end  = min(t + window_hh, T)
+        prices = prices_path[t:t_end].copy()
+
+        # WD: use current intraday basis (delta_imb[t]) projected flat across
+        # the gate window — no within-gate foresight.
+        if delta_imb_path is not None:
+            near = min(gate_hh, len(prices))
+            prices[:near] = prices[:near] + delta_imb_path[t]
 
         d_opt, c_opt, _ = solve_daily_lp(
             prices, E_n, E_min, E_max, P_bar, eta_c, eta_d, dt_h,
@@ -244,8 +259,11 @@ def _rolling_intrinsic_one_path(args) -> tuple:
             c_s = float(c_opt[s]) if s < len(c_opt) else 0.0
             step = t + s
 
-            cashflow = float(prices_path[step] * (d_s - c_s) * dt_h)
-            pv += cashflow * (disc ** step)
+            realized = float(prices_path[step])
+            if delta_imb_path is not None:
+                realized += float(delta_imb_path[step])
+
+            pv += realized * (d_s - c_s) * dt_h * (disc ** step)
 
             dE = (-d_s / eta_d + c_s * eta_c) * dt_h
             E_n = float(np.clip(E_n + dE, E_min, E_max))
@@ -267,6 +285,7 @@ def rolling_intrinsic_parallel(
     max_workers: Optional[int] = None,
     backend: str = "thread",
     verbose: bool = True,
+    delta_imb_paths: Optional[np.ndarray] = None,  # (N_paths, T) — enables WD intraday pricing
 ) -> tuple:
     """
     Parallel path-level rolling intrinsic valuation.
@@ -275,6 +294,10 @@ def rolling_intrinsic_parallel(
     The default thread backend is notebook-friendly on Windows and works well
     here because the expensive LP solve runs in SciPy/HiGHS native code. Use
     backend="process" only from a normal Python script with spawn-safe entry.
+
+    If delta_imb_paths is provided, each gate re-optimises against intraday
+    prices (P_da + delta_imb) for the committed window and settles cashflow at
+    those realized prices — modelling WD re-optimisation.
     """
     P_da_paths = np.asarray(P_da_paths, dtype=np.float32)
     N, T = P_da_paths.shape
@@ -294,6 +317,7 @@ def rolling_intrinsic_parallel(
             E_init_frac,
             window_hh,
             gate_hh,
+            delta_imb_paths[n] if delta_imb_paths is not None else None,
         )
         for n in range(N)
     ]
@@ -309,7 +333,7 @@ def rolling_intrinsic_parallel(
             soc_paths[idx] = soc
             done += 1
             if verbose and (done == 1 or done == N or done % max(1, N // 10) == 0):
-                print(f"  RI paths complete {done}/{N} ...", end='\r')
+                print(f"  RI paths complete {done}/{N} ...", end='\r', flush=True)
 
     if verbose:
         print()

@@ -163,6 +163,56 @@ def cashflow_batch(
     return CF.astype(np.float32)
 
 
+def cashflow_batch_components(
+    modes:        List[DispatchMode],
+    P_da:         np.ndarray,    # (N_paths,)  £/MWh
+    delta_imb:    np.ndarray,    # (N_paths,)  £/MWh
+    pi_dc:        np.ndarray,    # (N_paths,)  £/MW/h
+    pi_qr:        np.ndarray,    # (N_paths,)  £/MW/h
+    P_bar_mw:     float,
+    dt_h:         float,
+    deg_cost:     float = 6.0,
+    vom:          float = 1.2,
+) -> Tuple[np.ndarray, Dict[str, np.ndarray]]:
+    """
+    Same arithmetic as cashflow_batch but also returns per-source components.
+
+    Returns
+    -------
+    CF         : (N, M) total cashflow
+    components : dict with keys 'da', 'imbalance', 'dc', 'qr', 'costs'; each (N, M)
+    """
+    net_fracs = np.array([m.net_frac  for m in modes], dtype=np.float32)
+    dc_fracs  = np.array([m.r_dc_frac for m in modes], dtype=np.float32)
+    qr_fracs  = np.array([m.r_qr_frac for m in modes], dtype=np.float32)
+
+    P   = P_da[:, None].astype(np.float32)
+    dlt = delta_imb[:, None].astype(np.float32)
+    pdc = pi_dc[:, None].astype(np.float32)
+    pqr = pi_qr[:, None].astype(np.float32)
+
+    net = net_fracs[None, :] * P_bar_mw
+    dc  = dc_fracs[None, :]  * P_bar_mw
+    qr  = qr_fracs[None, :]  * P_bar_mw
+    d_mw = np.maximum(net,  0.0)
+    c_mw = np.maximum(-net, 0.0)
+
+    da_comp    = (P * net * dt_h).astype(np.float32)
+    imb_comp   = (dlt * d_mw * dt_h).astype(np.float32)
+    dc_comp    = (pdc * dc * dt_h).astype(np.float32)
+    qr_comp    = (pqr * qr * dt_h).astype(np.float32)
+    costs_comp = ((deg_cost + vom) * (d_mw + c_mw) * dt_h).astype(np.float32)
+
+    CF = da_comp + imb_comp + dc_comp + qr_comp - costs_comp
+    return CF.astype(np.float32), {
+        'da':        da_comp,
+        'imbalance': imb_comp,
+        'dc':        dc_comp,
+        'qr':        qr_comp,
+        'costs':     costs_comp,
+    }
+
+
 # ---------------------------------------------------------------------------
 # SoC transition — vectorised over paths for a single mode
 # ---------------------------------------------------------------------------

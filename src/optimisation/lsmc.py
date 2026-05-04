@@ -41,7 +41,7 @@ from dataclasses import dataclass, field
 from typing import Dict, List, Optional, Tuple
 
 from src.optimisation.dispatch import (
-    DispatchMode, DEFAULT_MODES, cashflow_batch,
+    DispatchMode, DEFAULT_MODES, cashflow_batch, cashflow_batch_components,
     next_soc_grid, feasibility_mask,
 )
 from src.processes.simulate import PathBundle
@@ -64,29 +64,35 @@ BASIS_NAMES = [
     "delta_imb",
     "pi_dc", "pi_qr",
     "E", "E_sq", "E_x_Pda",
-    "P_da_x_delta",   # replaces sin_h  — cross-sectionally active
-    "P_da_x_dc",      # replaces cos_h
-    "dc_x_qr",        # replaces efa_block
+    "P_da_x_delta",      # price × imbalance interaction
+    "P_da_x_dc",         # price × ancillary interaction
+    "dc_x_qr",           # joint ancillary signal
+    "hpfc_fwd_spread",   # mean(HPFC[t+1:t+W]) - HPFC[t]: forward carry signal
 ]
-N_BASIS = len(BASIS_NAMES)   # 14
+N_BASIS = len(BASIS_NAMES)   # 15
 
 
 def basis_matrix(
-    P_da:       np.ndarray,   # (N,) £/MWh
-    P_id_spr:   np.ndarray,   # (N,) intraday premium (£/MWh)
-    delta:      np.ndarray,   # (N,) imbalance basis
-    pi_dc:      np.ndarray,   # (N,) DC clearing
-    pi_qr:      np.ndarray,   # (N,) QR clearing
-    E:          float,        # scalar SoC (MWh) — same for all paths at one grid node
-    t_hh:       int,          # half-hour of day (0..47)
-    efa_block:  int,          # EFA block (0..5)
+    P_da:           np.ndarray,   # (N,) £/MWh
+    P_id_spr:       np.ndarray,   # (N,) intraday premium (£/MWh)
+    delta:          np.ndarray,   # (N,) imbalance basis
+    pi_dc:          np.ndarray,   # (N,) DC clearing
+    pi_qr:          np.ndarray,   # (N,) QR clearing
+    E:              float,        # scalar SoC (MWh) — same for all paths at one grid node
+    t_hh:           int,          # half-hour of day (0..47)
+    efa_block:      int,          # EFA block (0..5)
+    hpfc_fwd_spr:   float = 0.0,  # mean(HPFC[t+1:t+W]) - HPFC[t], £/MWh
 ) -> np.ndarray:
     """
-    Build (N_paths, 14) basis matrix for one SoC grid node.
+    Build (N_paths, 15) basis matrix for one SoC grid node.
 
     Inputs are clipped and scaled here so the polynomial regression remains
     numerically stable. Without this, P_da^3 and E^2 can dominate the normal
     equations and create explosive continuation values.
+
+    Feature 14 (hpfc_fwd_spread) gives the regression a deterministic
+    forward-carry signal: when future HPFC prices are higher than current,
+    the policy should prefer to hold charge rather than discharge now.
     """
     N  = len(P_da)
 
@@ -96,6 +102,7 @@ def basis_matrix(
     dc = np.clip(pi_dc, 0.0, 100.0).astype(np.float32) / 20.0
     qr = np.clip(pi_qr, 0.0, 100.0).astype(np.float32) / 20.0
     E_scaled = np.float32(E / 100.0)
+    fwd = np.float32(np.clip(hpfc_fwd_spr, -100.0, 100.0) / 100.0)
 
     Phi = np.empty((N, N_BASIS), dtype=np.float32)
     Phi[:, 0]  = 1.0
@@ -112,6 +119,7 @@ def basis_matrix(
     Phi[:, 11] = P * dlt    # P_da × delta_imb — price×imbalance interaction
     Phi[:, 12] = P * dc     # P_da × pi_dc     — price×ancillary interaction
     Phi[:, 13] = dc * qr    # pi_dc × pi_qr    — joint ancillary signal
+    Phi[:, 14] = fwd        # HPFC forward carry — same for all paths at time t
 
     return Phi
 
@@ -167,6 +175,9 @@ class ValuationResult:
     mtm_p95:        float
     efc_total:      float         # equivalent full cycles consumed
     action_diagnostics: Dict[str, object] = field(default_factory=dict)
+    # Per-source discounted PV vectors (N_paths,) for revenue attribution.
+    # Keys: 'da', 'imbalance', 'dc', 'qr', 'costs'.
+    cf_breakdown: Optional[Dict[str, np.ndarray]] = None
 
 
 # ---------------------------------------------------------------------------
@@ -196,6 +207,7 @@ class LSMCSolver:
         modes:      Optional[List[DispatchMode]] = None,
         verbose:    bool = True,
         hpfc_params = None,
+        hpfc_curve: Optional[np.ndarray] = None,
     ) -> None:
         self.asset   = asset_cfg
         self.lsmc    = lsmc_cfg
@@ -204,6 +216,11 @@ class LSMCSolver:
         self.modes   = modes if modes is not None else DEFAULT_MODES
         self.verbose = verbose
         self.hpfc_params = hpfc_params
+        # Half-hourly HPFC prices used to compute the forward-carry basis feature.
+        self._hpfc_curve = (
+            np.asarray(hpfc_curve, dtype=np.float32) if hpfc_curve is not None else None
+        )
+        self._fwd_window_hh = int(lsmc_cfg.get('fwd_window_hh', 16))
 
         # Derived constants
         self.P_bar    = float(asset_cfg['power_mw'])
@@ -288,6 +305,28 @@ class LSMCSolver:
                     dt_h=self.dt_h,
                 )
         self._feasible_jkm = feasible_jkm
+
+    def _hpfc_forward_spread(self, T: int) -> np.ndarray:
+        """
+        Compute the HPFC forward-carry signal for each of the T timesteps.
+
+        Returns spread[t] = mean(HPFC[t+1 : t+1+W]) - HPFC[t]  in £/MWh,
+        where W = self._fwd_window_hh.  When no HPFC curve is provided,
+        returns zeros so the feature is inactive without breaking the regression.
+        """
+        if self._hpfc_curve is None:
+            return np.zeros(T, dtype=np.float32)
+        W = self._fwd_window_hh
+        needed = T + W + 1
+        curve = self._hpfc_curve
+        if len(curve) < needed:
+            curve = np.pad(curve, (0, needed - len(curve)), mode='edge')
+        curve = curve.astype(np.float64)
+        # Vectorised rolling mean via cumulative sum
+        cs = np.concatenate([[0.0], np.cumsum(curve)])
+        t_arr = np.arange(T)
+        fwd_mean = (cs[t_arr + 1 + W] - cs[t_arr + 1]) / W
+        return (fwd_mean - curve[:T]).astype(np.float32)
 
     def _intraday_spread_matrix(self, bundle: PathBundle, P_da_all: np.ndarray) -> np.ndarray:
         """
@@ -392,6 +431,9 @@ class LSMCSolver:
         P_id_spr_all = self._intraday_spread_matrix(bundle, P_da_all)
         diagnostics["intraday_spread_std"] = float(np.std(P_id_spr_all[:, :T]))
 
+        # HPFC forward-carry: deterministic signal, shape (T,)
+        hpfc_fwd_spread = self._hpfc_forward_spread(T)
+
         # Pre-compute next-SoC table: E_next[j, m] — (J, M)
         # For each SoC node and each mode, deterministic E' (before SoH scaling)
         E_next_table = np.zeros((J, M), dtype=np.float32)
@@ -465,7 +507,8 @@ class LSMCSolver:
 
                     # Regression
                     Phi = basis_matrix(P_da, P_id, delta, pi_dc, pi_qr,
-                                       E_j, t_hh, efa_block)   # (N, 14)
+                                       E_j, t_hh, efa_block,
+                                       hpfc_fwd_spr=float(hpfc_fwd_spread[t]))   # (N, 15)
 
                     # OLS with feature standardisation and ridge regularisation.
                     # Work in float64 to avoid float32 rounding in the normal
@@ -709,12 +752,22 @@ class LSMCSolver:
         soc_store[:, 0] = E_n
         soh_store[:, 0] = SoH_n
 
+        # Per-source discounted PV accumulators (N,) updated each step.
+        pv_da_paths    = np.zeros(N, dtype=np.float64)
+        pv_imb_paths   = np.zeros(N, dtype=np.float64)
+        pv_dc_paths    = np.zeros(N, dtype=np.float64)
+        pv_qr_paths    = np.zeros(N, dtype=np.float64)
+        pv_costs_paths = np.zeros(N, dtype=np.float64)
+
         # Pre-extract and cap prices consistently with backward().
         P_da_all  = np.exp(np.clip(bundle.ln_P_base, -100.0, np.log(500.0))).astype(np.float32)
         delta_all = np.clip(bundle.delta_imb, -500.0, 500.0).astype(np.float32)
         pi_dc_all = np.clip(bundle.pi['DC_Low'], 0.0, 100.0).astype(np.float32)
         pi_qr_all = np.clip(bundle.pi.get('QR_Pos', bundle.pi['DC_Low']), 0.0, 100.0).astype(np.float32)
         P_id_spr_all = self._intraday_spread_matrix(bundle, P_da_all)
+
+        # HPFC forward-carry signal, shape (T,)
+        hpfc_fwd_spread = self._hpfc_forward_spread(T)
 
         # SoH fade rate per HH step
         # Simplified: linear SoH degradation at cycle_rate EFCs/year
@@ -785,6 +838,9 @@ class LSMCSolver:
                 qr_c  = np.clip(pi_qr,  0.0, 100.0).astype(np.float32) / 20.0
                 p_id_c = np.clip(P_id_spr_all[:, t], -200.0, 200.0).astype(np.float32) / 100.0
                 E_sc  = (E_n / 100.0).astype(np.float32)
+                fwd_c = np.float32(
+                    np.clip(hpfc_fwd_spread[t], -100.0, 100.0) / 100.0
+                )
                 phi_t = np.empty((N, N_BASIS), dtype=np.float32)
                 phi_t[:, 0]  = 1.0
                 phi_t[:, 1]  = P_c
@@ -800,6 +856,7 @@ class LSMCSolver:
                 phi_t[:, 11] = P_c * dlt_c
                 phi_t[:, 12] = P_c * dc_c
                 phi_t[:, 13] = dc_c * qr_c
+                phi_t[:, 14] = fwd_c
                 # cont_beta[t, j, k, m, :] · phi(S(t)) → (N, M)
                 cb = policy.cont_beta[t, j_arr, k_arr, :, :]   # (N, M, 14)
                 cont = np.clip(
@@ -816,7 +873,8 @@ class LSMCSolver:
                 dc_c_next = np.clip(pi_dc_all[:, t_next], 0.0, 100.0).astype(np.float32) / 20.0
                 qr_c_next = np.clip(pi_qr_all[:, t_next], 0.0, 100.0).astype(np.float32) / 20.0
                 p_id_c_next = np.clip(P_id_spr_all[:, t_next], -200.0, 200.0).astype(np.float32) / 100.0
-                phi_next_base = np.empty((N, 11), dtype=np.float32)
+                fwd_c_next = np.float32(np.clip(hpfc_fwd_spread[t_next], -100.0, 100.0) / 100.0)
+                phi_next_base = np.empty((N, 12), dtype=np.float32)
                 phi_next_base[:, 0] = 1.0
                 phi_next_base[:, 1] = P_c_next
                 phi_next_base[:, 2] = P_c_next ** 2
@@ -828,14 +886,17 @@ class LSMCSolver:
                 phi_next_base[:, 8]  = P_c_next * dlt_c_next
                 phi_next_base[:, 9]  = P_c_next * dc_c_next
                 phi_next_base[:, 10] = dc_c_next * qr_c_next
+                phi_next_base[:, 11] = fwd_c_next
                 j_next_nm = np.clip(
                     np.searchsorted(self.soc_grid, E_next_nm, side='right') - 1,
                     0,
                     self.n_soc - 1,
                 )
                 k_next_nm = np.broadcast_to(k_arr[:, None], (N, M))
-                b_nm = policy.beta[t_next, j_next_nm, k_next_nm, :]   # (N, M, 14)
-                b_base_nm = np.concatenate([b_nm[:, :, :8], b_nm[:, :, 11:14]], axis=2)
+                b_nm = policy.beta[t_next, j_next_nm, k_next_nm, :]   # (N, M, 15)
+                b_base_nm = np.concatenate(
+                    [b_nm[:, :, :8], b_nm[:, :, 11:15]], axis=2
+                )
                 E_sc_nm = (E_next_nm / 100.0).astype(np.float32)
                 cont = np.clip(
                     np.sum(phi_next_base[:, None, :] * b_base_nm, axis=2)
@@ -902,6 +963,22 @@ class LSMCSolver:
             act_store[:, t]     = m_star.astype(np.int16)
             E_n = E_n_new
 
+            # Per-source components for the chosen mode only — (N,) vectors.
+            # Cheaper than indexing into the full (N, M) component matrices.
+            net_ch = net_fracs[m_star]                          # (N,)
+            d_ch   = np.maximum(net_ch, 0.0) * self.P_bar      # (N,)
+            c_ch   = np.maximum(-net_ch, 0.0) * self.P_bar     # (N,)
+            dc_ch  = self._dc_fracs[m_star] * self.P_bar       # (N,)
+            qr_ch  = self._qr_fracs[m_star] * self.P_bar       # (N,)
+
+            disc_t = disc_factors[t]
+            pv_da_paths    += (P_da  * net_ch * self.P_bar * dt).astype(np.float64) * disc_t
+            pv_imb_paths   += (delta * d_ch   * dt).astype(np.float64)              * disc_t
+            pv_dc_paths    += (pi_dc * dc_ch  * dt).astype(np.float64)              * disc_t
+            pv_qr_paths    += (pi_qr * qr_ch  * dt).astype(np.float64)              * disc_t
+            pv_costs_paths += ((self.deg_cost + self.vom) * (d_ch + c_ch) * dt
+                               ).astype(np.float64) * disc_t
+
         # Discount cashflows
         pv_paths = (cf_store * disc_factors[None, :]).sum(axis=1)   # (N,)
 
@@ -953,6 +1030,13 @@ class LSMCSolver:
                 / max(self.E_name, 1.0)
             )),
             action_diagnostics = action_diagnostics,
+            cf_breakdown = {
+                'da':        pv_da_paths.astype(np.float64),
+                'imbalance': pv_imb_paths.astype(np.float64),
+                'dc':        pv_dc_paths.astype(np.float64),
+                'qr':        pv_qr_paths.astype(np.float64),
+                'costs':     pv_costs_paths.astype(np.float64),
+            },
         )
 
     def forward_parallel(
@@ -1038,6 +1122,12 @@ class LSMCSolver:
         soh_paths     = np.concatenate([r.soh_paths     for r in results], axis=0)
         action_paths  = np.concatenate([r.action_paths  for r in results], axis=0)
 
+        bd_keys = ['da', 'imbalance', 'dc', 'qr', 'costs']
+        cf_breakdown = {
+            k: np.concatenate([r.cf_breakdown[k] for r in results])
+            for k in bd_keys
+        } if results[0].cf_breakdown is not None else None
+
         efc_total = float(np.mean(
             np.sum(np.maximum(-np.diff(soc_paths, axis=1), 0.0), axis=1)
             / max(self.E_name, 1.0)
@@ -1091,6 +1181,7 @@ class LSMCSolver:
             mtm_p95=float(np.percentile(pv_paths, 95)),
             efc_total=efc_total,
             action_diagnostics=merged_diag,
+            cf_breakdown=cf_breakdown,
         )
 
 
@@ -1108,6 +1199,7 @@ def run_lsmc(
     verbose:      bool = True,
     fwd_bundle:   Optional[PathBundle] = None,
     hpfc_params = None,
+    hpfc_curve:   Optional[np.ndarray] = None,
 ) -> Tuple[Policy, ValuationResult]:
     """
     Run full LSMC: backward induction then forward simulation.
@@ -1116,6 +1208,7 @@ def run_lsmc(
     ----------
     bundle      : PathBundle for backward pass
     fwd_bundle  : optional separate PathBundle for forward pass (default: same as bundle)
+    hpfc_curve  : (T+W,) half-hourly HPFC prices for the forward-carry basis feature
 
     Returns
     -------
@@ -1130,7 +1223,10 @@ def run_lsmc(
             fwd_check = validate_path_bundle(fwd_bundle, require_anchor=False)
             fwd_check.raise_if_failed()
 
-    solver = LSMCSolver(asset_cfg, lsmc_cfg, deg_cfg, fin_cfg, modes, verbose, hpfc_params=hpfc_params)
+    solver = LSMCSolver(
+        asset_cfg, lsmc_cfg, deg_cfg, fin_cfg, modes, verbose,
+        hpfc_params=hpfc_params, hpfc_curve=hpfc_curve,
+    )
     policy = solver.backward(bundle)
     fwd    = fwd_bundle if fwd_bundle is not None else bundle
     result = solver.forward(fwd, policy)
