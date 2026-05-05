@@ -11,6 +11,7 @@ Run from the project root:
 import sys
 import os
 import json
+from pathlib import Path
 
 import numpy as np
 import pytest
@@ -18,13 +19,16 @@ import pytest
 # Make project root importable regardless of how pytest is launched
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from src.processes.simulate import simulate, default_params_from_config
+from src.processes.simulate import PathBundle, simulate, default_params_from_config
 from src.processes.imbalance import ImbalanceParams
-from src.optimisation.dispatch import DEFAULT_MODES
-from src.optimisation.lsmc import run_lsmc
+from src.optimisation.dispatch import DEFAULT_MODES, enumerate_modes
+from src.optimisation.lsmc import LSMCSolver, N_BASIS, Policy, run_lsmc
 from src.optimisation.dual_bound import compute_dual_bound
 from src.valuation.mtm import aggregate_mtm
-from src.config import ASSET, LSMC as LSMC_CFG, DEGRADATION, FINANCE, SCHWARTZ_SMITH
+from src.config import (
+    ASSET, LSMC as LSMC_CFG, DEGRADATION, FINANCE, SCHWARTZ_SMITH,
+    configure_asset_duration,
+)
 from src.model_status import build_model_status
 from src.utils import find_project_root
 from src.validation import (
@@ -259,6 +263,80 @@ class TestValidationHelpers:
 # Test C — MTM component signs
 # ---------------------------------------------------------------------------
 
+class TestLSMCForwardStateHandling:
+    """Forward policy evaluation should use actual path SoC, not the lower grid node."""
+
+    @pytest.fixture()
+    def coarse_4h_solver(self):
+        asset = dict(ASSET)
+        configure_asset_duration(asset, 4.0)
+        cfg = dict(LSMC_CFG)
+        cfg.update({
+            "n_soc_nodes": 5,
+            "soh_nodes": [1.0],
+            "run_validation": False,
+        })
+        modes = enumerate_modes(
+            net_levels=[0.0, 0.5],
+            dc_levels=[0.0],
+            qr_levels=[0.0],
+        )
+        return LSMCSolver(asset, cfg, DEGRADATION, FINANCE, modes=modes, verbose=False)
+
+    def test_forward_feasibility_uses_actual_soc_between_grid_nodes(self, coarse_4h_solver):
+        solver = coarse_4h_solver
+        e_actual = np.array([95.0], dtype=np.float32)
+        soh = np.array([1.0], dtype=np.float32)
+
+        j_floor = np.searchsorted(solver.soc_grid, e_actual, side="right") - 1
+        discharge_idx = 1
+
+        assert not solver._feasible_jkm[j_floor[0], 0, discharge_idx]
+        assert solver._feasibility_mask_for_states(e_actual, soh)[0, discharge_idx]
+
+        e_next = solver._next_soc_for_states(e_actual, soh)[0, discharge_idx]
+        expected = e_actual[0] - 0.5 * solver.P_bar / solver.eta_d * solver.dt_h
+        assert np.isclose(e_next, expected)
+
+    def test_forward_can_discharge_when_actual_soc_is_feasible(self, coarse_4h_solver):
+        solver = coarse_4h_solver
+        T = 1
+        N = 1
+        policy = Policy(
+            beta=np.zeros((T, solver.n_soc, solver.n_soh, N_BASIS), dtype=np.float32),
+            cont_beta=np.zeros(
+                (T, solver.n_soc, solver.n_soh, len(solver.modes), N_BASIS),
+                dtype=np.float32,
+            ),
+            soc_grid=solver.soc_grid,
+            soh_nodes=solver.soh_nodes,
+            modes=solver.modes,
+            dt_h=solver.dt_h,
+            n_steps=T,
+            n_paths=N,
+        )
+        bundle = PathBundle(
+            chi=np.zeros((N, T + 1), dtype=np.float32),
+            xi=np.zeros((N, T + 1), dtype=np.float32),
+            ln_P_base=np.log(np.full((N, T + 1), 1.0, dtype=np.float32)),
+            lam=np.zeros((N, T + 1, 3), dtype=np.float32),
+            delta_imb=np.full((N, T + 1), 500.0, dtype=np.float32),
+            pi={
+                "DC_Low": np.zeros((N, T + 1), dtype=np.float32),
+                "QR_Pos": np.zeros((N, T + 1), dtype=np.float32),
+            },
+            dt=solver.dt_h / 8760.0,
+            n_paths=N,
+            n_steps=T,
+        )
+
+        result = solver.forward(bundle, policy, E_init_frac=95.0 / solver.E_name)
+
+        assert result.action_paths[0, 0] == 1
+        assert result.cashflow_paths[0, 0] > 0.0
+        assert result.soc_paths[0, 1] < result.soc_paths[0, 0]
+
+
 class TestMtmComponentSigns:
     """Test C: each MTM component has the correct economic sign."""
 
@@ -348,6 +426,22 @@ class TestProjectUtilities:
         root = find_project_root(os.path.join(os.path.dirname(__file__), "..", "notebooks"))
         assert (root / "src").is_dir()
         assert (root / "data").is_dir()
+
+    def test_phase4_notebook_uses_material_continuation_cap(self):
+        """Notebook 12 must not silently clip long-duration continuation values."""
+        nb_path = Path(__file__).resolve().parents[1] / "notebooks" / "12_phase4_method_comparison.ipynb"
+        nb = json.loads(nb_path.read_text(encoding="utf-8"))
+        source = "\n".join(
+            "".join(cell.get("source", ""))
+            for cell in nb.get("cells", [])
+            if cell.get("cell_type") == "code"
+        )
+
+        assert (
+            "'continuation_value_cap_gbp': float(LSMC_CFG.get('continuation_value_cap_gbp', 25_000_000))"
+            in source
+        )
+        assert "LSMC continuation clipping is material" in source
 
 
 class TestModelStatus:

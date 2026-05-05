@@ -133,7 +133,7 @@ simulated path to start from the HPFC level while preserving relative SS dynamic
 
 ### Setup
 
-50 MW GB fast-cycle BESS valued across four durations (1h / 2h / 3h / 4h) using
+100 MW GB fast-cycle BESS valued across four durations (1h / 2h / 3h / 4h) using
 five methods: initial hourly intrinsic, DA rolling intrinsic, WD rolling
 intrinsic, forward simulation (LSMC), and perfect foresight (DA energy).
 500 HPFC-anchored Monte Carlo paths, 4,320 half-hour simulation horizon.
@@ -147,7 +147,54 @@ intrinsic, forward simulation (LSMC), and perfect foresight (DA energy).
 | 3h | £2.60m | £5.67m | **£7.53m** | £4.69m |
 | 4h | £3.17m | £6.86m | **£7.29m** | £5.71m |
 
-All values are annualised £m/year for a 50 MW asset.
+All values are annualised GBPm/year for a 100 MW asset.
+
+2026-05-05 correction: the declining LSMC duration curve should be treated as
+a pre-fix numerical artifact, not a stable economic conclusion. The forward
+policy evaluation was snapping each path's actual SoC down to the lower grid
+node for feasibility and continuation. That is increasingly punitive as MWh
+duration grows and grid spacing widens. The solver now evaluates feasibility
+and next SoC from the actual path state, and interpolates continuation between
+SoC grid nodes; duration-sweep artefacts need to be regenerated before this
+table is used as evidence.
+
+2026-05-05 follow-up: the remaining 1h-above-4h result was traced to the
+Phase 13 notebook override `continuation_value_cap_gbp = 3_000_000`. On the
+4,320 half-hour horizon this cap materially clipped continuation regressions,
+especially for 4h assets, making the long-duration policy idle too often.
+A controlled full-horizon diagnostic with 120 backward / 120 forward paths
+showed:
+
+| Cap | 1h LSMC | 4h LSMC | 1h clip obs | 4h clip obs |
+|---|---:|---:|---:|---:|
+| GBP3m | GBP7.63m | GBP5.01m | 11.4% | 50.9% |
+| GBP10m+ | GBP7.74m | GBP9.79m | 0.0% | 0.0% |
+
+Notebook 12 now uses the production cap from `LSMC_CFG`
+(`continuation_value_cap_gbp = 25_000_000`) and fails fast if continuation
+clipping becomes material. Existing Phase 13 files generated under the low cap
+should be discarded and regenerated.
+
+Post-cap rerun (2026-05-05 14:41) produced the mechanically coherent duration
+curve below. The level is higher than the clipped run because the 2h-4h policies
+are no longer forced to discard continuation value.
+
+| Duration | WD rolling | LSMC | LSMC option premium |
+|---|---:|---:|---:|
+| 1h | GBP2.97m | GBP9.04m | +GBP6.06m |
+| 2h | GBP4.39m | GBP10.15m | +GBP5.75m |
+| 3h | GBP5.67m | GBP10.62m | +GBP4.95m |
+| 4h | GBP6.86m | GBP10.92m | +GBP4.06m |
+
+Diagnostics on the executed notebooks: continuation clipping was 0.0% for all
+durations, sampled regression condition number was about 12.7, and sampled rank
+deficiency was 0. The high level is therefore not a cap/clipping explosion.
+
+Important interpretation caveat: current LSMC treats the simulated imbalance
+basis as an actionable half-hourly signal in the dispatch decision. That makes
+the post-cap LSMC an optimistic full-stack operational value. A more conservative
+central case should add an imbalance information lag or forecast haircut before
+treating the LSMC level as bankable market value.
 
 ### Diverging sensitivities
 

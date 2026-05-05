@@ -259,6 +259,7 @@ class LSMCSolver:
                 max(10_000_000.0, self.P_bar * 250_000.0),
             )
         )
+        self.reserve_sustain_h = float(lsmc_cfg.get('reserve_sustain_h', 0.5))
 
         # Pre-stack mode fractions as arrays (M,) for vectorised dispatch
         self._net_fracs = np.array([m.net_frac  for m in self.modes], np.float32)
@@ -303,6 +304,7 @@ class LSMCSolver:
                     eta_charge=self.eta_c,
                     eta_discharge=self.eta_d,
                     dt_h=self.dt_h,
+                    reserve_sustain_h=self.reserve_sustain_h,
                 )
         self._feasible_jkm = feasible_jkm
 
@@ -718,6 +720,78 @@ class LSMCSolver:
 
         return V_interp
 
+    def _next_soc_for_states(
+        self,
+        E_curr: np.ndarray,
+        SoH: np.ndarray,
+    ) -> np.ndarray:
+        """
+        Compute next SoC for every path and mode using each path's actual SoC.
+
+        The backward pass lives on grid nodes, but the forward pass tracks
+        continuous path states. Using the floored grid node here creates a
+        duration-dependent bias because grid spacing widens with MWh capacity.
+        """
+        E_curr = np.asarray(E_curr, dtype=np.float32)
+        SoH = np.asarray(SoH, dtype=np.float32)
+        dE_m = np.where(
+            self._net_fracs > 0,
+            -self._net_fracs * self.P_bar / self.eta_d * self.dt_h,
+            -self._net_fracs * self.P_bar * self.eta_c * self.dt_h,
+        ).astype(np.float32)
+        E_min = np.float32(self.E_min_fr * self.E_name)
+        E_max = (self.E_max_fr * self.E_name * SoH).astype(np.float32)
+        return np.clip(
+            E_curr[:, None] + dE_m[None, :],
+            E_min,
+            E_max[:, None],
+        ).astype(np.float32)
+
+    def _feasibility_mask_for_states(
+        self,
+        E_curr: np.ndarray,
+        SoH: np.ndarray,
+    ) -> np.ndarray:
+        """
+        Vectorised feasibility mask for actual path states in the forward pass.
+
+        This mirrors dispatch.feasibility_mask but avoids snapping path SoC to
+        the lower grid node. Snapping is especially punitive for longer-duration
+        assets because one grid interval can represent tens of MWh.
+        """
+        E_curr = np.asarray(E_curr, dtype=np.float32)
+        SoH = np.asarray(SoH, dtype=np.float32)
+
+        net_mw = self._net_fracs.astype(np.float32) * self.P_bar
+        dc_mw = self._dc_fracs.astype(np.float32) * self.P_bar
+        qr_mw = self._qr_fracs.astype(np.float32) * self.P_bar
+        res_mw = dc_mw + qr_mw
+
+        E_min = np.float32(self.E_min_fr * self.E_name)
+        E_max = (self.E_max_fr * self.E_name * SoH).astype(np.float32)
+
+        headroom = (
+            np.abs(self._net_fracs)[None, :]
+            + self._dc_fracs[None, :]
+            + self._qr_fracs[None, :]
+        ) <= (SoH[:, None] + 1e-6)
+
+        sustain_down = res_mw[None, :] * self.reserve_sustain_h / self.eta_d
+        sustain_up = res_mw[None, :] * self.reserve_sustain_h * self.eta_c
+        E_after = np.where(
+            net_mw[None, :] > 0,
+            E_curr[:, None] - net_mw[None, :] / self.eta_d * self.dt_h,
+            E_curr[:, None] + (-net_mw[None, :]) * self.eta_c * self.dt_h,
+        )
+
+        return (
+            headroom
+            & (E_curr[:, None] - sustain_down >= E_min - 1e-3)
+            & (E_curr[:, None] + sustain_up <= E_max[:, None] + 1e-3)
+            & (E_after >= E_min - 1e-3)
+            & (E_after <= E_max[:, None] + 1e-3)
+        )
+
     # ------------------------------------------------------------------
     # Forward simulation
     # ------------------------------------------------------------------
@@ -842,7 +916,15 @@ class LSMCSolver:
             # The terminal step has zero continuation. Earlier versions used
             # beta[t] at the current SoC node, which can hallucinate large
             # same-time continuation values in forward policy evaluation.
-            E_next_nm = self._E_next_jkm[j_arr, k_arr, :]   # (N, M)
+            j_hi_arr = j_arr + 1
+            denom = self.soc_grid[j_hi_arr] - self.soc_grid[j_arr]
+            alpha_j = np.where(
+                denom > 1e-9,
+                (E_n - self.soc_grid[j_arr]) / np.where(denom > 1e-9, denom, 1.0),
+                0.0,
+            )
+            alpha_j = np.clip(alpha_j, 0.0, 1.0).astype(np.float32)
+            E_next_nm = self._next_soc_for_states(E_n, SoH_n)   # (N, M)
             if t + 1 >= T:
                 cont = np.zeros((N, M), dtype=np.float32)
             elif policy.cont_beta is not None:
@@ -874,7 +956,16 @@ class LSMCSolver:
                 phi_t[:, 13] = dc_c * qr_c
                 phi_t[:, 14] = fwd_c
                 # cont_beta[t, j, k, m, :] · phi(S(t)) → (N, M)
-                cb = policy.cont_beta[t, j_arr, k_arr, :, :]   # (N, M, 14)
+                E_max_n = self.E_max_fr * self.E_name * SoH_n
+                hi_feasible = self.soc_grid[j_hi_arr] <= E_max_n + 1e-3
+                alpha_eff = np.where(hi_feasible, alpha_j, 0.0).astype(np.float32)
+                j_hi_eff = np.where(hi_feasible, j_hi_arr, j_arr)
+                cb_lo = policy.cont_beta[t, j_arr, k_arr, :, :]
+                cb_hi = policy.cont_beta[t, j_hi_eff, k_arr, :, :]
+                cb = (
+                    (1.0 - alpha_eff[:, None, None]) * cb_lo
+                    + alpha_eff[:, None, None] * cb_hi
+                )
                 cont = np.clip(
                     np.einsum('nmb,nb->nm', cb, phi_t),
                     -self.continuation_cap,
@@ -923,7 +1014,7 @@ class LSMCSolver:
                     self.continuation_cap,
                 ).astype(np.float32)
 
-            infeas = ~self._feasible_jkm[j_arr, k_arr, :]
+            infeas = ~self._feasibility_mask_for_states(E_n, SoH_n)
 
             Q = CF + np.float32(self.disc) * cont   # (N, M)
             Q[infeas] = np.float32(-1e9)
