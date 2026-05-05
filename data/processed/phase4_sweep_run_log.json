@@ -1,25 +1,25 @@
 {
   "1h": {
     "status": "ok",
-    "elapsed_s": 862.0,
+    "elapsed_s": 1133.1,
     "output_nb": "g:\\My Drive\\Research\\bess_project\\data\\processed\\executed\\12_phase4_1h.ipynb",
     "returncode": 0
   },
   "2h": {
     "status": "ok",
-    "elapsed_s": 898.6,
+    "elapsed_s": 1135.5,
     "output_nb": "g:\\My Drive\\Research\\bess_project\\data\\processed\\executed\\12_phase4_2h.ipynb",
     "returncode": 0
   },
   "3h": {
     "status": "ok",
-    "elapsed_s": 879.0,
+    "elapsed_s": 1150.9,
     "output_nb": "g:\\My Drive\\Research\\bess_project\\data\\processed\\executed\\12_phase4_3h.ipynb",
     "returncode": 0
   },
   "4h": {
     "status": "ok",
-    "elapsed_s": 867.4,
+    "elapsed_s": 1158.3,
     "output_nb": "g:\\My Drive\\Research\\bess_project\\data\\processed\\executed\\12_phase4_4h.ipynb",
     "returncode": 0
   }

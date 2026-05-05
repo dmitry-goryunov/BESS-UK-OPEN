@@ -310,9 +310,13 @@ class LSMCSolver:
         """
         Compute the HPFC forward-carry signal for each of the T timesteps.
 
-        Returns spread[t] = mean(HPFC[t+1 : t+1+W]) - HPFC[t]  in £/MWh,
-        where W = self._fwd_window_hh.  When no HPFC curve is provided,
-        returns zeros so the feature is inactive without breaking the regression.
+        Returns spread[t] = max(HPFC[t+1 : t+1+W]) - HPFC[t]  in £/MWh,
+        where W = self._fwd_window_hh.  Using the maximum rather than the mean
+        directly encodes the best available sell price in the look-ahead window,
+        which is what drives the hold-vs-dispatch decision.
+
+        When no HPFC curve is provided, returns zeros so the feature is
+        inactive without breaking the regression.
         """
         if self._hpfc_curve is None:
             return np.zeros(T, dtype=np.float32)
@@ -321,12 +325,12 @@ class LSMCSolver:
         curve = self._hpfc_curve
         if len(curve) < needed:
             curve = np.pad(curve, (0, needed - len(curve)), mode='edge')
-        curve = curve.astype(np.float64)
-        # Vectorised rolling mean via cumulative sum
-        cs = np.concatenate([[0.0], np.cumsum(curve)])
-        t_arr = np.arange(T)
-        fwd_mean = (cs[t_arr + 1 + W] - cs[t_arr + 1]) / W
-        return (fwd_mean - curve[:T]).astype(np.float32)
+        curve = curve.astype(np.float32)
+        # Rolling max via stride_tricks — no Python loop over T
+        from numpy.lib.stride_tricks import sliding_window_view
+        windows = sliding_window_view(curve[1:], window_shape=W)   # (T+..., W)
+        fwd_max = windows[:T].max(axis=1)                          # (T,)
+        return (fwd_max - curve[:T]).astype(np.float32)
 
     def _intraday_spread_matrix(self, bundle: PathBundle, P_da_all: np.ndarray) -> np.ndarray:
         """
@@ -387,9 +391,12 @@ class LSMCSolver:
         M  = len(self.modes)
         dt = self.dt_h
 
+        _bwd_t0 = time.time()
+        _print_stride = max(1, T // 10)   # print ~10 progress lines
+
         if self.verbose:
             print(f"LSMC backward: T={T} steps, N={N} paths, "
-                  f"J={J} SoC nodes, K={K} SoH nodes, M={M} modes")
+                  f"J={J} SoC nodes, K={K} SoH nodes, M={M} modes", flush=True)
 
         # Coefficient store
         beta      = np.zeros((T, J, K,    N_BASIS), dtype=np.float32)
@@ -454,8 +461,10 @@ class LSMCSolver:
 
         # Backward loop
         for t in range(T - 1, -1, -1):
-            if self.verbose and t % 1000 == 0:
-                print(f"  t={t:5d} / {T}  ...", end='\r')
+            if self.verbose and (t == T - 1 or (T - 1 - t) % _print_stride == 0):
+                pct = 100 * (T - t) / T
+                elapsed = time.time() - _bwd_t0
+                print(f"  bwd {pct:5.1f}%  t={t:5d}  {elapsed:6.1f}s elapsed", flush=True)
 
             # Market state at step t
             P_da  = P_da_all[:, t]       # (N,)
@@ -789,10 +798,17 @@ class LSMCSolver:
         q_gap_small_count = 0
         q_gap_min = float("inf")
 
+        _fwd_t0 = time.time()
+        _fwd_print_stride = max(1, T // 10)
+
         if self.verbose:
-            print(f"LSMC forward:  T={T}, N={N}")
+            print(f"LSMC forward:  T={T}, N={N}", flush=True)
 
         for t in range(T):
+            if self.verbose and t % _fwd_print_stride == 0:
+                pct = 100 * t / T
+                elapsed = time.time() - _fwd_t0
+                print(f"  fwd {pct:5.1f}%  t={t:5d}  {elapsed:6.1f}s elapsed", flush=True)
             P_da  = P_da_all[:, t]
             delta = delta_all[:, t]
             pi_dc = pi_dc_all[:, t]

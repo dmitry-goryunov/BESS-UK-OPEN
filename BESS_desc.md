@@ -129,6 +129,94 @@ simulated path to start from the HPFC level while preserving relative SS dynamic
 
 ---
 
+## Phase 4 duration sweep findings (2026-05-04)
+
+### Setup
+
+50 MW GB fast-cycle BESS valued across four durations (1h / 2h / 3h / 4h) using
+five methods: initial hourly intrinsic, DA rolling intrinsic, WD rolling
+intrinsic, forward simulation (LSMC), and perfect foresight (DA energy).
+500 HPFC-anchored Monte Carlo paths, 4,320 half-hour simulation horizon.
+
+### Result
+
+| Duration | Hourly intrinsic | WD rolling intrinsic | LSMC | PF (DA energy) |
+|---|---|---|---|---|
+| 1h | £0.97m | £2.97m | **£8.51m** | £1.79m |
+| 2h | £1.86m | £4.39m | **£8.36m** | £3.37m |
+| 3h | £2.60m | £5.67m | **£7.53m** | £4.69m |
+| 4h | £3.17m | £6.86m | **£7.29m** | £5.71m |
+
+All values are annualised £m/year for a 50 MW asset.
+
+### Diverging sensitivities
+
+Rolling intrinsic and perfect foresight **correctly increase** with duration:
+energy arbitrage (overnight trough → morning peak) scales with stored MWh.
+
+LSMC **decreases** with duration. The LSMC "option value" above the rolling
+intrinsic collapses from +£5.54m (1h) to +£0.43m (4h):
+
+| Duration | WD rolling | LSMC | LSMC option premium |
+|---|---|---|---|
+| 1h | £2.97m | £8.51m | +£5.54m |
+| 2h | £4.39m | £8.36m | +£3.97m |
+| 3h | £5.67m | £7.53m | +£1.86m |
+| 4h | £6.86m | £7.29m | +£0.43m |
+
+### Root cause: MW-based revenue dominance + SoC grid resolution
+
+The dominant revenue stream is **WD/intraday (imbalance)**, which is MW-based:
+`CF_imb = δ_imb × net × P_bar × dt`. This revenue does not scale with battery
+energy capacity — both a 1h and a 4h battery earn the same imbalance cashflow
+per half-hour if they apply the same dispatch action.
+
+As duration grows, the LSMC continuation value regression resolves the SoC
+landscape less accurately. With a fixed 9 SoC nodes, grid spacing is:
+
+| Duration | Usable MWh | Spacing (9 nodes) | Spacing (12 nodes) |
+|---|---|---|---|
+| 1h | 40 MWh | 5.0 MWh | — |
+| 4h | 160 MWh | 20.0 MWh | 14.5 MWh |
+
+The coarse grid for a 4h battery makes the continuation value regression
+over-smooth, causing the policy to favour fast cycling (imbalance mode)
+over multi-hour energy arbitrage. To achieve equivalent resolution for 4h
+would require ~36 SoC nodes, making the backward pass ~4× slower.
+
+### Attribution
+
+```
+Component          1h        2h        3h        4h
+─────────────────────────────────────────────────────
+HPFC anchor      -0.68m    -0.47m    -0.28m    -0.19m
+DA surprise      -0.05m    -0.01m    +0.02m    +0.05m
+WD/intraday      +9.39m    +8.41m    +7.76m    +7.21m
+DC ancillary     +0.51m    +0.61m    +0.61m    +0.58m
+QR ancillary     +0.32m    +0.72m    +0.28m    +0.44m
+Costs (deg+VOM)  -0.98m    -0.91m    -0.86m    -0.80m
+─────────────────────────────────────────────────────
+Total             8.51m     8.36m     7.53m     7.29m
+```
+
+The HPFC anchor component becomes *less negative* with duration (the policy
+holds charge longer, capturing more energy arbitrage), but the gain (+£0.5m
+from 1h to 4h) is outweighed by the imbalance revenue loss (−£2.2m).
+
+### Interpretation
+
+The result is partly genuine: in a GB market where imbalance and ancillary
+revenues dominate and are MW-based, a larger energy capacity does not
+proportionally increase total value. It is also partly numerical: the LSMC
+policy is suboptimal for 4h batteries given the current SoC grid resolution
+and 4,320 HH training horizon.
+
+The rolling intrinsic remains the correct lower bound for energy-only
+comparisons across durations. LSMC captures the full-stack option value for
+1–2h batteries but becomes increasingly conservative for 3–4h batteries.
+
+---
+
 ## Intrinsic vs extrinsic split
 
 ```
