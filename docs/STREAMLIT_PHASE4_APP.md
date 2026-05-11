@@ -18,7 +18,7 @@ The `streamlit_phase4_sweep.py` application visualizes the results from **notebo
 ✅ **Revenue Attribution** — Break down LSMC value by revenue source:
 - HPFC anchor (baseload forward curve)
 - DA surprise (day-ahead deviation)
-- WD/intraday (within-day trading)
+- Imbalance proxy (BM/ID substitute) (imbalance/BM proxy value)
 - DC ancillary (dynamic containment)
 - QR ancillary (quick reserve)
 - Degradation & O&M costs

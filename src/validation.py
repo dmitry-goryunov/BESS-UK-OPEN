@@ -140,6 +140,17 @@ def validate_path_bundle(
         if np.nanmin(arr_np) < 0.0:
             result.add_error(f"pi[{product}] contains negative prices")
 
+    if not hasattr(bundle, 'pi_bm'):
+        result.add_error("bundle is missing pi_bm")
+    else:
+        pi_bm_arr = np.asarray(bundle.pi_bm)
+        if pi_bm_arr.shape != expected_2d:
+            result.add_error(f"pi_bm shape {pi_bm_arr.shape} != {expected_2d}")
+        if not np.all(np.isfinite(pi_bm_arr)):
+            result.add_error("pi_bm contains non-finite values")
+        if np.nanmin(pi_bm_arr) < 0.0:
+            result.add_error("pi_bm contains negative prices")
+
     if not result.errors:
         p_da = np.exp(np.clip(np.asarray(bundle.ln_P_base), -100.0, np.log(price_max_gbp_mwh)))
         result.metrics["spot_mean_gbp_mwh"] = float(np.mean(p_da))

@@ -176,18 +176,39 @@ ANCILLARY = {
     },
 }
 
-# 3.5 Joint correlation matrix
-# Dims: [chi, xi, lambda1(level), lambda2(slope), delta_imb, pi_DC]
+# 3.5  Balancing Mechanism (BM) offer price process
+# pi_bm: mean-reverting (OU), positively correlated with chi (spot scarcity)
+BM = {
+    "kappa_bm":   2.0,     # mean-reversion speed (1/year)
+    "mu_bm":      25.0,    # long-run mean (£/MW/h)
+    "sigma_bm":   15.0,    # volatility (£/MW/h)
+    "activation_prob": 0.05,  # probability of BM activation per half-hour
+    "sustain_h":  1.0,     # sustained headroom required for BM (hours)
+}
+# Corr(pi_bm, chi) ~ +0.40  (scarcity drives both spot and BM clearing)
+# Corr(pi_bm, delta_imb) ~ +0.35  (positive NIV → system needs energy → high BM bids)
+BM = {
+    "mu_bm":              80.0,   # GBP/MWh long-run mean offer price
+    "sigma_bm":           30.0,   # diffusion vol (GBP/MWh per sqrt(year))
+    "kappa_bm":            1.5,   # mean-reversion speed (annual)
+    "p_activation":        0.12,  # Bernoulli prob of BOA per HH (≈6 calls/day across fleet)
+    "sustain_hh":          4,     # HH units a battery must sustain BM headroom (2h)
+    "r_bm_levels": [0.0, 0.25, 0.5],  # BM headroom fractions
+}
+
+# 3.6 Joint correlation matrix
+# Dims: [chi, xi, lambda1(level), lambda2(slope), delta_imb, pi_DC, pi_bm]
 CORRELATION = np.array([
-    [1.00,  0.30,  0.45,  0.20,  0.55, -0.25],
-    [0.30,  1.00,  0.15,  0.05,  0.10, -0.10],
-    [0.45,  0.15,  1.00,  0.20,  0.30, -0.20],
-    [0.20,  0.05,  0.20,  1.00,  0.15, -0.10],
-    [0.55,  0.10,  0.30,  0.15,  1.00, -0.30],
-    [-0.25,-0.10, -0.20, -0.10, -0.30,  1.00],
+    [1.00,  0.30,  0.45,  0.20,  0.55, -0.25,  0.40],
+    [0.30,  1.00,  0.15,  0.05,  0.10, -0.10,  0.10],
+    [0.45,  0.15,  1.00,  0.20,  0.30, -0.20,  0.20],
+    [0.20,  0.05,  0.20,  1.00,  0.15, -0.10,  0.05],
+    [0.55,  0.10,  0.30,  0.15,  1.00, -0.30,  0.35],
+    [-0.25,-0.10, -0.20, -0.10, -0.30,  1.00, -0.15],
+    [0.40,  0.10,  0.20,  0.05,  0.35, -0.15,  1.00],
 ], dtype=float)
 
-CORRELATION_LABELS = ["chi", "xi", "lambda1", "lambda2", "delta_imb", "pi_dc"]
+CORRELATION_LABELS = ["chi", "xi", "lambda1", "lambda2", "delta_imb", "pi_dc", "pi_bm"]
 
 
 # ---------------------------------------------------------------------------
@@ -207,9 +228,19 @@ LSMC = {
     "basis_include_hour_trig":       True,
     "basis_include_efa_block":       True,
     "continuation_value_cap_gbp": 25_000_000,
+    # Dispatch sees a lagged imbalance signal; realised delta_imb is only used
+    # for settlement cashflow. Set to 0 only for clairvoyant diagnostics.
+    "imbalance_signal_lag_hh": 1,
+    "delta_imb_cashflow_lag_hh": 1,
+    "reserve_sustain_h": 1.0,
+    # "summary" uses next-window DA max/min/mean/spread. "raw" appends the
+    # ordered next-window DA strip as extra regression features for diagnostics.
+    "da_forward_feature_mode": "summary",
+    "da_forward_raw_count_hh": 0,
     "dual_gap_acceptable": 0.02,
     "dual_gap_refine":     0.05,
     "run_rolling_intrinsic": True,
+    "p_activation": 0.05,  # BM activation probability
 }
 
 EFA_BLOCKS = {

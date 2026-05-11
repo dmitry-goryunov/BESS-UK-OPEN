@@ -48,20 +48,23 @@ class DispatchMode:
     net_frac:   float    # -1..+1 (charge is negative)
     r_dc_frac:  float    # 0..1
     r_qr_frac:  float    # 0..1
+    r_bm_frac:  float    # 0..1
 
     @property
     def headroom_used(self) -> float:
-        return abs(self.net_frac) + self.r_dc_frac + self.r_qr_frac
+        return abs(self.net_frac) + self.r_dc_frac + self.r_qr_frac + self.r_bm_frac
 
     def __repr__(self) -> str:
         return (f"DispatchMode(net={self.net_frac:+.2f}, "
-                f"dc={self.r_dc_frac:.2f}, qr={self.r_qr_frac:.2f})")
+                f"dc={self.r_dc_frac:.2f}, qr={self.r_qr_frac:.2f}, "
+                f"bm={self.r_bm_frac:.2f})")
 
 
 def enumerate_modes(
     net_levels:  List[float] = None,
     dc_levels:   List[float] = None,
     qr_levels:   List[float] = None,
+    bm_levels:   List[float] = None,
     headroom_tol: float = 1e-6,
 ) -> List[DispatchMode]:
     """
@@ -82,20 +85,30 @@ def enumerate_modes(
         dc_levels   = [0.0, 0.25, 0.5]
     if qr_levels is None:
         qr_levels   = [0.0, 0.25]
+    if bm_levels is None:
+        bm_levels   = [0.0, 0.25, 0.5]
 
     modes = []
     seen  = set()
     for net in net_levels:
         for dc in dc_levels:
             for qr in qr_levels:
-                # Headroom constraint
-                if abs(net) + dc + qr > 1.0 + headroom_tol:
-                    continue
-                key = (round(net, 4), round(dc, 4), round(qr, 4))
-                if key in seen:
-                    continue
-                seen.add(key)
-                modes.append(DispatchMode(net_frac=net, r_dc_frac=dc, r_qr_frac=qr))
+                for bm in bm_levels:
+                    # Headroom constraint
+                    if abs(net) + dc + qr + bm > 1.0 + headroom_tol:
+                        continue
+                    key = (round(net, 4), round(dc, 4), round(qr, 4), round(bm, 4))
+                    if key in seen:
+                        continue
+                    seen.add(key)
+                    modes.append(
+                        DispatchMode(
+                            net_frac=net,
+                            r_dc_frac=dc,
+                            r_qr_frac=qr,
+                            r_bm_frac=bm,
+                        )
+                    )
     return modes
 
 
@@ -113,10 +126,13 @@ def cashflow_batch(
     delta_imb:    np.ndarray,    # (N_paths,)  £/MWh imbalance basis
     pi_dc:        np.ndarray,    # (N_paths,)  £/MW/h
     pi_qr:        np.ndarray,    # (N_paths,)  £/MW/h
+    pi_bm:        np.ndarray,    # (N_paths,)  £/MWh
     P_bar_mw:     float,         # nameplate MW
     dt_h:         float,         # half-hour = 0.5 h
+    p_activation: float = 0.12,
     deg_cost:     float = 6.0,   # £/MWh throughput degradation shadow price
     vom:          float = 1.2,   # £/MWh variable O&M
+    imbalance_cashflow_mode: str = "discharge_only",
 ) -> np.ndarray:
     """
     Compute cashflows for all (paths × modes) pairs.
@@ -132,16 +148,19 @@ def cashflow_batch(
     net_fracs  = np.array([m.net_frac  for m in modes], dtype=np.float32)   # (M,)
     dc_fracs   = np.array([m.r_dc_frac for m in modes], dtype=np.float32)   # (M,)
     qr_fracs   = np.array([m.r_qr_frac for m in modes], dtype=np.float32)   # (M,)
+    bm_fracs   = np.array([m.r_bm_frac for m in modes], dtype=np.float32)   # (M,)
 
     # Broadcast: (N, 1) × (1, M) → (N, M)
     P   = P_da[:, None].astype(np.float32)        # (N, 1)
     dlt = delta_imb[:, None].astype(np.float32)   # (N, 1)
     pdc = pi_dc[:, None].astype(np.float32)       # (N, 1)
     pqr = pi_qr[:, None].astype(np.float32)       # (N, 1)
+    pbm = pi_bm[:, None].astype(np.float32)       # (N, 1)
 
     net = net_fracs[None, :] * P_bar_mw     # (N, M) — net MW
     dc  = dc_fracs[None, :]  * P_bar_mw     # (N, M) — DC reserve MW
     qr  = qr_fracs[None, :]  * P_bar_mw     # (N, M) — QR reserve MW
+    bm  = bm_fracs[None, :]  * P_bar_mw     # (N, M) — BM headroom MW
 
     d_mw = np.maximum(net,  0.0)   # discharge MW
     c_mw = np.maximum(-net, 0.0)   # charge MW
@@ -149,17 +168,27 @@ def cashflow_batch(
     # Wholesale DA revenue: discharge positive, charge negative
     wholesale = P * net * dt_h
 
-    # Imbalance uplift on discharge (system short → positive basis)
-    imb_uplift = dlt * d_mw * dt_h
+    if imbalance_cashflow_mode == "discharge_only":
+        # Imbalance uplift on discharge (system short -> positive basis)
+        imb_uplift = dlt * d_mw * dt_h
+    elif imbalance_cashflow_mode == "net":
+        # WD-like mode: value the whole net position at DA + delta_imb.
+        imb_uplift = dlt * net * dt_h
+    else:
+        raise ValueError(
+            "imbalance_cashflow_mode must be 'discharge_only' or 'net'; "
+            f"got {imbalance_cashflow_mode!r}"
+        )
 
     # Ancillary revenues
     anc_rev = (pdc * dc + pqr * qr) * dt_h
+    bm_rev  = pbm * bm * p_activation * dt_h
 
     # Degradation + VoM cost (on absolute throughput)
     throughput = (d_mw + c_mw) * dt_h    # MWh
     costs = (deg_cost + vom) * throughput
 
-    CF = wholesale + imb_uplift + anc_rev - costs   # (N, M)
+    CF = wholesale + imb_uplift + anc_rev + bm_rev - costs   # (N, M)
     return CF.astype(np.float32)
 
 
@@ -169,10 +198,13 @@ def cashflow_batch_components(
     delta_imb:    np.ndarray,    # (N_paths,)  £/MWh
     pi_dc:        np.ndarray,    # (N_paths,)  £/MW/h
     pi_qr:        np.ndarray,    # (N_paths,)  £/MW/h
+    pi_bm:        np.ndarray,    # (N_paths,)  £/MWh
     P_bar_mw:     float,
     dt_h:         float,
+    p_activation: float = 0.12,
     deg_cost:     float = 6.0,
     vom:          float = 1.2,
+    imbalance_cashflow_mode: str = "discharge_only",
 ) -> Tuple[np.ndarray, Dict[str, np.ndarray]]:
     """
     Same arithmetic as cashflow_batch but also returns per-source components.
@@ -185,30 +217,43 @@ def cashflow_batch_components(
     net_fracs = np.array([m.net_frac  for m in modes], dtype=np.float32)
     dc_fracs  = np.array([m.r_dc_frac for m in modes], dtype=np.float32)
     qr_fracs  = np.array([m.r_qr_frac for m in modes], dtype=np.float32)
+    bm_fracs  = np.array([m.r_bm_frac for m in modes], dtype=np.float32)
 
     P   = P_da[:, None].astype(np.float32)
     dlt = delta_imb[:, None].astype(np.float32)
     pdc = pi_dc[:, None].astype(np.float32)
     pqr = pi_qr[:, None].astype(np.float32)
+    pbm = pi_bm[:, None].astype(np.float32)
 
     net = net_fracs[None, :] * P_bar_mw
     dc  = dc_fracs[None, :]  * P_bar_mw
     qr  = qr_fracs[None, :]  * P_bar_mw
+    bm  = bm_fracs[None, :]  * P_bar_mw
     d_mw = np.maximum(net,  0.0)
     c_mw = np.maximum(-net, 0.0)
 
     da_comp    = (P * net * dt_h).astype(np.float32)
-    imb_comp   = (dlt * d_mw * dt_h).astype(np.float32)
+    if imbalance_cashflow_mode == "discharge_only":
+        imb_comp = (dlt * d_mw * dt_h).astype(np.float32)
+    elif imbalance_cashflow_mode == "net":
+        imb_comp = (dlt * net * dt_h).astype(np.float32)
+    else:
+        raise ValueError(
+            "imbalance_cashflow_mode must be 'discharge_only' or 'net'; "
+            f"got {imbalance_cashflow_mode!r}"
+        )
     dc_comp    = (pdc * dc * dt_h).astype(np.float32)
     qr_comp    = (pqr * qr * dt_h).astype(np.float32)
+    bm_comp    = (pbm * bm * p_activation * dt_h).astype(np.float32)
     costs_comp = ((deg_cost + vom) * (d_mw + c_mw) * dt_h).astype(np.float32)
 
-    CF = da_comp + imb_comp + dc_comp + qr_comp - costs_comp
+    CF = da_comp + imb_comp + dc_comp + qr_comp + bm_comp - costs_comp
     return CF.astype(np.float32), {
         'da':        da_comp,
         'imbalance': imb_comp,
         'dc':        dc_comp,
         'qr':        qr_comp,
+        'bm':        bm_comp,
         'costs':     costs_comp,
     }
 
@@ -284,6 +329,7 @@ def feasibility_mask(
     eta_discharge: float,
     dt_h:          float,
     reserve_sustain_h: float = 0.5,   # service must be sustained for ≥ 0.5h
+    sustain_bm_hh:   int   = 4,
 ) -> np.ndarray:
     """
     Return boolean mask (N_modes,): True if mode is feasible at this (E, SoH) state.
@@ -313,8 +359,10 @@ def feasibility_mask(
         # Energy needed to sustain reserves
         E_sustain_down = res_mw * reserve_sustain_h / eta_discharge
         E_sustain_up   = res_mw * reserve_sustain_h * eta_charge
+        bm_mw          = m.r_bm_frac * P_bar_mw
+        E_bm_needed    = bm_mw * (sustain_bm_hh * 0.5) / eta_discharge
 
-        if E_curr - E_sustain_down < E_min_mwh - 1e-3:
+        if E_curr - E_sustain_down - E_bm_needed < E_min_mwh - 1e-3:
             mask[i] = False; continue
         if E_curr + E_sustain_up  > E_max_mwh + 1e-3:
             mask[i] = False; continue

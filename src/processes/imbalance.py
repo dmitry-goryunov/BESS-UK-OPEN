@@ -77,6 +77,49 @@ def _filter_jumps(delta: np.ndarray, threshold_sigma: float = 2.5) -> np.ndarray
 # Calibration
 # ---------------------------------------------------------------------------
 
+def _prepare_da_prices(df_da):
+    """
+    Return one day-ahead price per settlement period.
+
+    The Elexon Market Index endpoint can return provider-level rows. Calibration
+    must not treat zero-volume provider placeholders as real prices, otherwise
+    SP-DA is biased strongly positive and jump asymmetry is overstated.
+    """
+    import pandas as pd
+
+    required = {"settlement_date", "settlement_period", "price_gbp_mwh"}
+    missing = required - set(df_da.columns)
+    if missing:
+        raise KeyError(f"df_da missing required columns: {sorted(missing)}")
+
+    keys = ["settlement_date", "settlement_period"]
+    work = df_da.copy()
+    if "volume_mwh" not in work.columns:
+        return (
+            work.groupby(keys, as_index=False)["price_gbp_mwh"]
+            .mean()
+            .dropna(subset=["price_gbp_mwh"])
+        )
+
+    positive_volume = work[work["volume_mwh"] > 0].copy()
+    if positive_volume.empty:
+        return (
+            work.groupby(keys, as_index=False)["price_gbp_mwh"]
+            .mean()
+            .dropna(subset=["price_gbp_mwh"])
+        )
+
+    positive_volume["price_x_volume"] = (
+        positive_volume["price_gbp_mwh"] * positive_volume["volume_mwh"]
+    )
+    out = (
+        positive_volume.groupby(keys, as_index=False)
+        .agg(price_x_volume=("price_x_volume", "sum"), volume_mwh=("volume_mwh", "sum"))
+    )
+    out["price_gbp_mwh"] = out["price_x_volume"] / out["volume_mwh"]
+    return out[keys + ["price_gbp_mwh"]].dropna(subset=["price_gbp_mwh"])
+
+
 def calibrate(df_da, df_sp, dt: float = 1.0, threshold_sigma: float = 2.5) -> ImbalanceParams:
     """
     Calibrate imbalance basis process from DA and SP price histories.
@@ -91,10 +134,9 @@ def calibrate(df_da, df_sp, dt: float = 1.0, threshold_sigma: float = 2.5) -> Im
     -------
     ImbalanceParams
     """
-    import pandas as pd
-
     # ---- Compute basis Delta = SP - DA ----
-    merged = df_da[['settlement_date', 'settlement_period', 'price_gbp_mwh']].merge(
+    da_clean = _prepare_da_prices(df_da)
+    merged = da_clean[['settlement_date', 'settlement_period', 'price_gbp_mwh']].merge(
         df_sp[['settlement_date', 'settlement_period', 'system_price']],
         on=['settlement_date', 'settlement_period'], how='inner'
     )

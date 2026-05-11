@@ -110,6 +110,46 @@ def fetch_mid_day(settlement_date: date) -> pd.DataFrame:
     return pd.DataFrame(rows)
 
 
+def _aggregate_mid_prices(df: pd.DataFrame) -> pd.DataFrame:
+    """
+    Collapse provider-level MID rows to one price per settlement period.
+
+    Elexon returns provider rows separately. In the current GB sample APXMIDP
+    carries nearly all volume while N2EXMIDP often appears as zero volume and
+    zero price. Keeping both rows makes downstream SP-DA calibration treat the
+    zero-volume N2EX placeholders as real day-ahead prices.
+    """
+    if df.empty:
+        return df
+
+    keys = ["settlement_date", "settlement_period"]
+    work = df.copy()
+    work["price_x_volume"] = work["price_gbp_mwh"] * work["volume_mwh"]
+
+    positive_volume = work[work["volume_mwh"] > 0].copy()
+    if positive_volume.empty:
+        out = (
+            work.groupby(keys, as_index=False)
+            .agg(
+                price_gbp_mwh=("price_gbp_mwh", "mean"),
+                volume_mwh=("volume_mwh", "sum"),
+            )
+        )
+    else:
+        out = (
+            positive_volume.groupby(keys, as_index=False)
+            .agg(
+                price_x_volume=("price_x_volume", "sum"),
+                volume_mwh=("volume_mwh", "sum"),
+            )
+        )
+        out["price_gbp_mwh"] = out["price_x_volume"] / out["volume_mwh"]
+        out = out.drop(columns=["price_x_volume"])
+
+    out["data_provider"] = "MID_VOLUME_WEIGHTED"
+    return out[["settlement_date", "settlement_period", "price_gbp_mwh", "volume_mwh", "data_provider"]]
+
+
 def fetch_mid_range(start: date, end: date, out_path: Path) -> pd.DataFrame:
     """Fetch MID for a date range; save to parquet."""
     frames = []
@@ -147,7 +187,7 @@ def fetch_mid_range(start: date, end: date, out_path: Path) -> pd.DataFrame:
         log.error("No MID data retrieved")
         return pd.DataFrame()
 
-    out = pd.concat(frames, ignore_index=True)
+    out = _aggregate_mid_prices(pd.concat(frames, ignore_index=True))
     out = out.sort_values(["settlement_date", "settlement_period"]).reset_index(drop=True)
 
     out_path.parent.mkdir(parents=True, exist_ok=True)

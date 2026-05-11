@@ -68,14 +68,15 @@ class DualBoundResult:
         return "\n".join(lines)
 
 
-def _path_prices(bundle: PathBundle, n: int, T: int) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+def _path_prices(bundle: PathBundle, n: int, T: int) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
     """Extract clipped one-path market arrays for the dispatch cashflow model."""
     p_da = np.exp(np.clip(bundle.ln_P_base[n, :T], -100.0, np.log(500.0))).astype(np.float32)
     delta = np.clip(bundle.delta_imb[n, :T], -500.0, 500.0).astype(np.float32)
     pi_dc = np.clip(bundle.pi["DC_Low"][n, :T], 0.0, 100.0).astype(np.float32)
     pi_qr_src = bundle.pi.get("QR_Pos", bundle.pi["DC_Low"])
     pi_qr = np.clip(pi_qr_src[n, :T], 0.0, 100.0).astype(np.float32)
-    return p_da, delta, pi_dc, pi_qr
+    pi_bm = np.clip(bundle.pi["BM"][n, :T], 0.0, 200.0).astype(np.float32)
+    return p_da, delta, pi_dc, pi_qr, pi_bm
 
 
 def _clairvoyant_path_value(
@@ -103,7 +104,7 @@ def _clairvoyant_path_value(
     modes = policy.modes
     net_fracs = np.array([m.net_frac for m in modes], dtype=np.float32)
     soc_grid = np.asarray(policy.soc_grid, dtype=np.float32)
-    p_da, delta, pi_dc, pi_qr = _path_prices(bundle, path_idx, T)
+    p_da, delta, pi_dc, pi_qr, pi_bm = _path_prices(bundle, path_idx, T)
 
     V_next = np.zeros(len(soc_grid), dtype=np.float64)
 
@@ -114,6 +115,7 @@ def _clairvoyant_path_value(
             delta_imb=np.array([delta[t]], dtype=np.float32),
             pi_dc=np.array([pi_dc[t]], dtype=np.float32),
             pi_qr=np.array([pi_qr[t]], dtype=np.float32),
+            pi_bm=np.array([pi_bm[t]], dtype=np.float32),
             P_bar_mw=P_bar,
             dt_h=dt_h,
             deg_cost=deg_cost,

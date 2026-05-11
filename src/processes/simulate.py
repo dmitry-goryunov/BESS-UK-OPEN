@@ -37,34 +37,38 @@ import numpy as np
 from dataclasses import dataclass, field
 from typing import Dict, Optional, Tuple
 
+from src.config import BM
 from src.processes.schwartz_smith import SSParams
 from src.processes.hpfc import HPFCParams
 from src.processes.imbalance import ImbalanceParams
 from src.processes.ancillary import AncillaryParams, PRODUCTS, SERVICE_VOLUME_MW, PEAK_PRICE
+from src.processes.bm import BMParams, BMProductParams
 
 
 # ---------------------------------------------------------------------------
 # Joint correlation matrix — CLAUDE.md spec
-# Order: [chi, xi, lam1, lam2, delta, pi_dc]
+# Order: [chi, xi, lam1, lam2, delta, pi_dc, pi_bm]
 # ---------------------------------------------------------------------------
 
 JOINT_CORR = np.array([
-    #  chi    xi    lam1   lam2   delta  pi_dc
-    [ 1.00,  0.30,  0.45,  0.20,  0.55, -0.25],  # chi
-    [ 0.30,  1.00,  0.15,  0.05,  0.10, -0.10],  # xi
-    [ 0.45,  0.15,  1.00,  0.20,  0.30, -0.20],  # lam1
-    [ 0.20,  0.05,  0.20,  1.00,  0.15, -0.10],  # lam2
-    [ 0.55,  0.10,  0.30,  0.15,  1.00, -0.30],  # delta
-    [-0.25, -0.10, -0.20, -0.10, -0.30,  1.00],  # pi_dc
+    #  chi    xi    lam1   lam2   delta  pi_dc  pi_bm
+    [ 1.00,  0.30,  0.45,  0.20,  0.55, -0.25,  0.40],  # chi
+    [ 0.30,  1.00,  0.15,  0.05,  0.10, -0.10,  0.10],  # xi
+    [ 0.45,  0.15,  1.00,  0.20,  0.30, -0.20,  0.20],  # lam1
+    [ 0.20,  0.05,  0.20,  1.00,  0.15, -0.10,  0.05],  # lam2
+    [ 0.55,  0.10,  0.30,  0.15,  1.00, -0.30,  0.35],  # delta
+    [-0.25, -0.10, -0.20, -0.10, -0.30,  1.00, -0.15],  # pi_dc
+    [ 0.40,  0.10,  0.20,  0.05,  0.35, -0.15,  1.00],  # pi_bm
 ])
 
-# Indices into the 6-vector for each factor
+# Indices into the 7-vector for each factor
 IDX_CHI   = 0
 IDX_XI    = 1
 IDX_LAM1  = 2
 IDX_LAM2  = 3
 IDX_DELTA = 4
 IDX_PIDC  = 5
+IDX_PIBM  = 6
 
 
 def _cholesky_joint(corr: np.ndarray = JOINT_CORR) -> np.ndarray:
@@ -74,7 +78,7 @@ def _cholesky_joint(corr: np.ndarray = JOINT_CORR) -> np.ndarray:
 
     Returns
     -------
-    L : (6, 6) lower-triangular matrix such that L @ L.T = corr
+    L : (7, 7) lower-triangular matrix such that L @ L.T = corr
     """
     # Check positive-definiteness
     eigvals = np.linalg.eigvalsh(corr)
@@ -116,6 +120,7 @@ class PathBundle:
     lam:       np.ndarray          # (n_paths, n_steps+1, K)
     delta_imb: np.ndarray          # (n_paths, n_steps+1)
     pi:        Dict[str, np.ndarray]  # each (n_paths, n_steps+1)
+    pi_bm:     np.ndarray          # (n_paths, n_steps+1)
     dt:        float
     n_paths:   int
     n_steps:   int
@@ -184,6 +189,7 @@ def simulate(
     hpfc_params: HPFCParams,
     imb_params:  ImbalanceParams,
     anc_params:  AncillaryParams,
+    bm_params:   BMParams,
     n_paths:     int   = 10_000,
     n_steps:     int   = 17_520,   # 1 year at half-hourly (365 * 48)
     dt:          float = 1 / (365 * 48),   # fraction of year per HH
@@ -195,8 +201,11 @@ def simulate(
     lam_0:       Optional[np.ndarray] = None,   # (n_paths, K)
     delta_0:     Optional[np.ndarray] = None,
     pi_0:        Optional[Dict[str, np.ndarray]] = None,
+    pi_bm_0:     Optional[np.ndarray] = None,
     dtype:       type = np.float32,
     allow_unanchored: bool = False,
+    ss_noise_scale: float = 1.0,
+    shape_noise_scale: float = 1.0,
 ) -> PathBundle:
     """
     Simulate joint half-hourly paths for all state variables.
@@ -229,7 +238,7 @@ def simulate(
     if corr_matrix is None:
         corr_matrix = JOINT_CORR
 
-    L = _cholesky_joint(corr_matrix)   # (6, 6) lower-triangular
+    L = _cholesky_joint(corr_matrix)   # (7, 7) lower-triangular
 
     rng = np.random.default_rng(seed)
 
@@ -252,6 +261,7 @@ def simulate(
     lam       = np.zeros((N, T + 1, K), dtype=dtype)
     delta_imb = np.zeros((N, T + 1), dtype=dtype)
     pi_arr    = {p: np.zeros((N, T + 1), dtype=dtype) for p in PRODUCTS}
+    pi_bm     = np.zeros((N, T + 1), dtype=dtype)
 
     # ------------------------------------------------------------------
     # Set initial states
@@ -264,6 +274,11 @@ def simulate(
         lam[:, 0, :] = lam_0
     if delta_0 is not None:
         delta_imb[:, 0] = delta_0
+
+    if pi_0 is not None and 'bm' in pi_0:
+        pi_bm[:, 0] = pi_0['bm']
+    else:
+        pi_bm[:, 0] = float(BM['mu_bm'])
 
     # Initial ancillary prices: unconditional means from calibration
     for prod in PRODUCTS:
@@ -281,8 +296,8 @@ def simulate(
     # ------------------------------------------------------------------
     ss = ss_params
     exp_kappa  = float(np.exp(-ss.kappa * dt))
-    std_chi    = float(ss.sigma_chi * np.sqrt(dt))
-    std_xi     = float(ss.sigma_xi  * np.sqrt(dt))
+    std_chi    = float(ss.sigma_chi * np.sqrt(dt)) * ss_noise_scale
+    std_xi     = float(ss.sigma_xi  * np.sqrt(dt)) * ss_noise_scale
     drift_xi   = float(ss.mu_xi * dt)
 
     # ------------------------------------------------------------------
@@ -294,7 +309,7 @@ def simulate(
     alpha_arr  = np.array(hpfc_params.alpha, dtype=float)    # (K,) 1/day
     sigma_lam  = np.array(hpfc_params.sigma_lambda, dtype=float)  # (K,)
     exp_alpha  = np.exp(-alpha_arr * dt_in_days)              # (K,)
-    std_lam    = sigma_lam * np.sqrt(dt_in_days)              # (K,) per HH step
+    std_lam    = sigma_lam * np.sqrt(dt_in_days) * shape_noise_scale  # (K,) per HH step
 
     # ------------------------------------------------------------------
     # Pre-compute imbalance OU parameters.
@@ -305,6 +320,10 @@ def simulate(
     dt_in_hh    = dt * 365.0 * 48.0
     exp_theta   = float(np.exp(-imb.theta_delta * dt_in_hh))
     std_delta   = float(imb.sigma_delta * np.sqrt(dt_in_hh))
+
+    bm_mu       = float(BM['mu_bm'])
+    exp_kappa_bm = float(np.exp(-BM['kappa_bm'] * dt))
+    std_bm      = float(BM['sigma_bm'] * np.sqrt(dt))
 
     # ------------------------------------------------------------------
     # Pre-compute ancillary AR(1) parameters
@@ -337,7 +356,7 @@ def simulate(
     # ~CHUNK× and enables a single batched Cholesky matmul per chunk.
     # Note: chunking changes the RNG interleaving vs. per-step draws, so paths
     # will differ from the old implementation for the same seed.
-    n_joint = 6                           # chi, xi, lam1, lam2, delta, pi_dc
+    n_joint = 7                           # chi, xi, lam1, lam2, delta, pi_dc, pi_bm
     n_indep_lam = max(0, K - 2)          # lam3, lam4, ...
     n_indep_anc = len(PRODUCTS) - 1       # all products except DC_Low (pi_dc)
     indep_prods = [p for p in PRODUCTS if p != 'DC_Low']
@@ -411,6 +430,13 @@ def simulate(
                  + sigma_hh['DC_Low'] * z_corr[:, IDX_PIDC])
             ).astype(dtype)
 
+            # BM offer price: correlated via z_corr[:, IDX_PIBM]
+            pi_bm[:, t+1] = np.maximum(
+                0.0,
+                (exp_kappa_bm * (pi_bm[:, t] - bm_mu) + bm_mu
+                 + std_bm * z_corr[:, IDX_PIBM])
+            ).astype(dtype)
+
             # All other products: independent normals
             for ii, prod in enumerate(indep_prods):
                 mu_p = mu_prod[prod]
@@ -433,6 +459,7 @@ def simulate(
         lam       = lam,
         delta_imb = delta_imb,
         pi        = pi_arr,
+        pi_bm     = pi_bm,
         dt        = dt,
         n_paths   = N,
         n_steps   = T,
@@ -528,7 +555,25 @@ def default_params_from_config():
         q_req     = dict(SERVICE_VOLUME_MW),
     )
 
-    return ss, hpfc, imb, anc
+    # --- BM ---
+    bm = BMParams(
+        products = {
+            'BM_Up': BMProductParams(
+                product='BM_Up',
+                phi=0.8,
+                sigma=BM['sigma_bm'],
+                mu=BM['mu_bm'],
+            ),
+            'BM_Down': BMProductParams(
+                product='BM_Down',
+                phi=0.8,
+                sigma=BM['sigma_bm'] * 0.8,
+                mu=BM['mu_bm'] * 0.6,
+            ),
+        }
+    )
+
+    return ss, hpfc, imb, anc, bm
 
 
 # ---------------------------------------------------------------------------
@@ -605,6 +650,12 @@ def validate_marginals(
     pi_dc_min = float(bundle.pi['DC_Low'].min())
     results['pi_dc_non_negative'] = (pi_dc_min >= 0.0, pi_dc_min, 0.0)
     results['pi_dc_bounded']      = (pi_dc_max < 500.0, pi_dc_max, 500.0)
+
+    # --- pi_bm: non-negative and bounded ---
+    pi_bm_max = float(np.max(bundle.pi_bm))
+    pi_bm_min = float(np.min(bundle.pi_bm))
+    results['pi_bm_non_negative'] = (pi_bm_min >= 0.0, pi_bm_min, 0.0)
+    results['pi_bm_bounded']      = (pi_bm_max < 2000.0, pi_bm_max, 2000.0)
 
     # --- Cross-correlation chi vs delta: test at increment level ---
     # Terminal-state correlation is diluted by accumulated jump variance.

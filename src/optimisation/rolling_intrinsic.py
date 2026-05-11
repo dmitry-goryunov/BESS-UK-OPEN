@@ -32,7 +32,7 @@ from concurrent.futures import ProcessPoolExecutor, ThreadPoolExecutor, as_compl
 from functools import lru_cache
 
 import numpy as np
-from typing import Optional
+from typing import Callable, Optional
 
 
 @lru_cache(maxsize=32)
@@ -174,12 +174,12 @@ def rolling_intrinsic(
             t_end  = min(t + window_hh, T)
             prices = P_da_paths[n, t:t_end].copy()
 
-            # WD: use current intraday basis (delta_imb[t]) projected flat across
-            # the gate window for optimization — no within-gate foresight.
-            # Cashflow settles at realized per-period prices below.
+            # WD: use visible per-period intraday basis for the committed gate.
+            # The remaining look-ahead stays DA-only, so there is no beyond-gate
+            # intraday foresight.
             if delta_imb_paths is not None:
                 near = min(gate_hh, len(prices))
-                prices[:near] = prices[:near] + delta_imb_paths[n, t]
+                prices[:near] = prices[:near] + delta_imb_paths[n, t:t + near]
 
             d_opt, c_opt, _ = solve_daily_lp(
                 prices, E_n, E_min, E_max, P_bar, eta_c, eta_d, dt_h,
@@ -243,11 +243,12 @@ def _rolling_intrinsic_one_path(args) -> tuple:
         t_end  = min(t + window_hh, T)
         prices = prices_path[t:t_end].copy()
 
-        # WD: use current intraday basis (delta_imb[t]) projected flat across
-        # the gate window — no within-gate foresight.
+        # WD: use visible per-period intraday basis for the committed gate.
+        # The remaining look-ahead stays DA-only, so there is no beyond-gate
+        # intraday foresight.
         if delta_imb_path is not None:
             near = min(gate_hh, len(prices))
-            prices[:near] = prices[:near] + delta_imb_path[t]
+            prices[:near] = prices[:near] + delta_imb_path[t:t + near]
 
         d_opt, c_opt, _ = solve_daily_lp(
             prices, E_n, E_min, E_max, P_bar, eta_c, eta_d, dt_h,
@@ -286,6 +287,7 @@ def rolling_intrinsic_parallel(
     backend: str = "thread",
     verbose: bool = True,
     delta_imb_paths: Optional[np.ndarray] = None,  # (N_paths, T) — enables WD intraday pricing
+    progress_callback: Optional[Callable[[int, int], None]] = None,
 ) -> tuple:
     """
     Parallel path-level rolling intrinsic valuation.
@@ -332,6 +334,11 @@ def rolling_intrinsic_parallel(
             pv_paths[idx] = pv
             soc_paths[idx] = soc
             done += 1
+            if progress_callback is not None:
+                try:
+                    progress_callback(done, N)
+                except Exception:
+                    pass
             if verbose and (done == 1 or done == N or done % max(1, N // 10) == 0):
                 print(f"  RI paths complete {done}/{N} ...", end='\r', flush=True)
 

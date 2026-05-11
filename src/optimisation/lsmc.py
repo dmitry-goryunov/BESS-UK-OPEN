@@ -19,9 +19,12 @@ FORWARD PASS:
   At each step, interpolate continuation value from stored β.
   Choose mode maximising Q.  Accumulate discounted cashflows.
 
-Basis functions (CLAUDE.md spec — 14 features):
-  [1, P_da, P_da^2, P_da^3, P_id-P_da, delta_imb, pi_dc, pi_qr,
-   E, E^2, E×P_da, sin(2π t/24), cos(2π t/24), EFA_block]
+Basis functions:
+  [1, P_da, P_da^2, P_da^3, P_id-P_da, delta_signal, pi_dc, pi_qr,
+   E, E^2, E^3, E*P_da, price/signal interactions, HPFC carry,
+   next-window DA max/min/mean/spread,
+   E*da_fwd_max (opportunity-cost: high SoC × peak forward price → hold, don't DC),
+   + optional: 6 EFA-block means + 6 EFA-block spreads (da_forward_feature_mode=efa_blocks)]
 
 References
 ----------
@@ -33,6 +36,7 @@ Longstaff & Schwartz (2001) Rev. Fin. Studies 14(1)
 from __future__ import annotations
 
 import os
+import json
 import time
 from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
 
@@ -42,7 +46,7 @@ from typing import Dict, List, Optional, Tuple
 
 from src.optimisation.dispatch import (
     DispatchMode, DEFAULT_MODES, cashflow_batch, cashflow_batch_components,
-    next_soc_grid, feasibility_mask,
+    enumerate_modes, next_soc_grid, feasibility_mask,
 )
 from src.processes.simulate import PathBundle
 from src.validation import (
@@ -61,38 +65,56 @@ BASIS_NAMES = [
     "const",
     "P_da", "P_da_sq", "P_da_cu",
     "P_id_spread",
-    "delta_imb",
-    "pi_dc", "pi_qr",
-    "E", "E_sq", "E_x_Pda",
+    "delta_signal",
+    "pi_dc", "pi_qr", "pi_bm",
+    "E", "E_sq", "E_cu", "E_x_Pda",
+    "E_x_pi_bm",
     "P_da_x_delta",      # price × imbalance interaction
     "P_da_x_dc",         # price × ancillary interaction
     "dc_x_qr",           # joint ancillary signal
-    "hpfc_fwd_spread",   # mean(HPFC[t+1:t+W]) - HPFC[t]: forward carry signal
+    "hpfc_fwd_spread",   # deterministic HPFC carry signal
+    "da_fwd_max",        # path-specific max DA price over next forward window
+    "da_fwd_min",        # path-specific min DA price over next forward window
+    "da_fwd_mean",       # path-specific mean DA price over next forward window
+    "da_fwd_spread",     # path-specific max-min DA spread over next forward window
+    "soc_x_da_spread",   # E × forward DA spread
+    "dc_x_da_spread",    # DC clearing × forward DA spread
+    "E_sq_x_da_mean",    # E² × forward DA mean
+    "soc_x_da_max",      # E × forward DA max: high SoC + price spike → hold, suppress DC
 ]
-N_BASIS = len(BASIS_NAMES)   # 15
+N_BASIS = len(BASIS_NAMES)   # 26
+_N_EFA_BLOCKS = 6            # GB EFA blocks per 48HH day
 
 
 def basis_matrix(
-    P_da:           np.ndarray,   # (N,) £/MWh
-    P_id_spr:       np.ndarray,   # (N,) intraday premium (£/MWh)
-    delta:          np.ndarray,   # (N,) imbalance basis
-    pi_dc:          np.ndarray,   # (N,) DC clearing
-    pi_qr:          np.ndarray,   # (N,) QR clearing
-    E:              float,        # scalar SoC (MWh) — same for all paths at one grid node
-    t_hh:           int,          # half-hour of day (0..47)
-    efa_block:      int,          # EFA block (0..5)
-    hpfc_fwd_spr:   float = 0.0,  # mean(HPFC[t+1:t+W]) - HPFC[t], £/MWh
+    P_da:               np.ndarray,   # (N,) £/MWh
+    P_id_spr:           np.ndarray,   # (N,) intraday premium (£/MWh)
+    delta:              np.ndarray,   # (N,) imbalance dispatch signal
+    pi_dc:              np.ndarray,   # (N,) DC clearing
+    pi_qr:              np.ndarray,   # (N,) QR clearing
+    pi_bm:              np.ndarray,   # (N,) BM offer price
+    E:                  np.ndarray | float, # SoC (MWh): scalar grid node or path state
+    t_hh:               int,          # half-hour of day (0..47)
+    efa_block:          int,          # EFA block (0..5)
+    hpfc_fwd_spr:       float = 0.0,  # mean(HPFC[t+1:t+W]) - HPFC[t], £/MWh
+    da_fwd_max:         Optional[np.ndarray] = None, # (N,) next-window DA max
+    da_fwd_min:         Optional[np.ndarray] = None, # (N,) next-window DA min
+    da_fwd_mean:        Optional[np.ndarray] = None, # (N,) next-window DA mean
+    da_fwd_spread:      Optional[np.ndarray] = None, # (N,) next-window DA max-min
+    da_fwd_raw:         Optional[np.ndarray] = None, # (N, Wraw) ordered next-window DA strip
+    da_fwd_efa_blocks:  Optional[np.ndarray] = None, # (N, 2*_N_EFA_BLOCKS) EFA-block means then spreads
+    e_max:              float = 100.0, # nameplate energy (MWh) — normalises E features
 ) -> np.ndarray:
     """
-    Build (N_paths, 15) basis matrix for one SoC grid node.
+    Build (N_paths, N_BASIS) basis matrix for one SoC grid node.
 
     Inputs are clipped and scaled here so the polynomial regression remains
     numerically stable. Without this, P_da^3 and E^2 can dominate the normal
     equations and create explosive continuation values.
 
-    Feature 14 (hpfc_fwd_spread) gives the regression a deterministic
-    forward-carry signal: when future HPFC prices are higher than current,
-    the policy should prefer to hold charge rather than discharge now.
+    HPFC carry is deterministic by time step. The DA forward-strip features are
+    path-varying and give LSMC the same kind of next-strip market information
+    used by rolling intrinsic benchmarks when that strip is assumed observable.
     """
     N  = len(P_da)
 
@@ -101,10 +123,49 @@ def basis_matrix(
     dlt = np.clip(delta, -500.0, 500.0).astype(np.float32) / 100.0
     dc = np.clip(pi_dc, 0.0, 100.0).astype(np.float32) / 20.0
     qr = np.clip(pi_qr, 0.0, 100.0).astype(np.float32) / 20.0
-    E_scaled = np.float32(E / 100.0)
+    pbm = np.clip(pi_bm, 0.0, 200.0).astype(np.float32) / 20.0
+    E_scaled = np.asarray(E, dtype=np.float32) / np.float32(max(e_max, 1.0))
     fwd = np.float32(np.clip(hpfc_fwd_spr, -100.0, 100.0) / 100.0)
+    z = np.zeros(N, dtype=np.float32)
+    da_max = (
+        z if da_fwd_max is None
+        else np.clip(da_fwd_max, -100.0, 500.0).astype(np.float32) / 100.0
+    )
+    da_min = (
+        z if da_fwd_min is None
+        else np.clip(da_fwd_min, -100.0, 500.0).astype(np.float32) / 100.0
+    )
+    da_mean = (
+        z if da_fwd_mean is None
+        else np.clip(da_fwd_mean, -100.0, 500.0).astype(np.float32) / 100.0
+    )
+    da_spread = (
+        z if da_fwd_spread is None
+        else np.clip(da_fwd_spread, -100.0, 600.0).astype(np.float32) / 100.0
+    )
+    raw_dim = 0
+    raw = None
+    if da_fwd_raw is not None:
+        raw = np.asarray(da_fwd_raw, dtype=np.float32)
+        if raw.ndim == 1:
+            raw = raw[:, None]
+        if raw.shape[0] != N:
+            raise ValueError(f"da_fwd_raw first dimension {raw.shape[0]} != N {N}")
+        raw = np.clip(raw, -100.0, 500.0).astype(np.float32) / 100.0
+        raw_dim = int(raw.shape[1])
 
-    Phi = np.empty((N, N_BASIS), dtype=np.float32)
+    efa_dim = 0
+    efa = None
+    if da_fwd_efa_blocks is not None:
+        efa = np.asarray(da_fwd_efa_blocks, dtype=np.float32)
+        if efa.ndim == 1:
+            efa = efa[:, None]
+        if efa.shape[0] != N:
+            raise ValueError(f"da_fwd_efa_blocks first dimension {efa.shape[0]} != N {N}")
+        efa = np.clip(efa, -100.0, 500.0).astype(np.float32) / 100.0
+        efa_dim = int(efa.shape[1])
+
+    Phi = np.empty((N, N_BASIS + raw_dim + efa_dim), dtype=np.float32)
     Phi[:, 0]  = 1.0
     Phi[:, 1]  = P
     Phi[:, 2]  = P ** 2
@@ -113,13 +174,28 @@ def basis_matrix(
     Phi[:, 5]  = dlt
     Phi[:, 6]  = dc
     Phi[:, 7]  = qr
-    Phi[:, 8]  = E_scaled
-    Phi[:, 9]  = E_scaled ** 2
-    Phi[:, 10] = E_scaled * P
-    Phi[:, 11] = P * dlt    # P_da × delta_imb — price×imbalance interaction
-    Phi[:, 12] = P * dc     # P_da × pi_dc     — price×ancillary interaction
-    Phi[:, 13] = dc * qr    # pi_dc × pi_qr    — joint ancillary signal
-    Phi[:, 14] = fwd        # HPFC forward carry — same for all paths at time t
+    Phi[:, 8]  = pbm
+    Phi[:, 9]  = E_scaled * pbm
+    Phi[:, 10] = E_scaled
+    Phi[:, 11] = E_scaled ** 2
+    Phi[:, 12] = E_scaled ** 3
+    Phi[:, 13] = E_scaled * P
+    Phi[:, 14] = P * dlt    # P_da × delta_signal — price×imbalance interaction
+    Phi[:, 15] = P * dc     # P_da × pi_dc     — price×ancillary interaction
+    Phi[:, 16] = dc * qr    # pi_dc × pi_qr    — joint ancillary signal
+    Phi[:, 17] = fwd        # HPFC forward carry — same for all paths at time t
+    Phi[:, 18] = da_max
+    Phi[:, 19] = da_min
+    Phi[:, 20] = da_mean
+    Phi[:, 21] = da_spread
+    Phi[:, 22] = E_scaled * da_spread          # soc_x_da_spread
+    Phi[:, 23] = dc * da_spread                # dc_x_da_spread
+    Phi[:, 24] = E_scaled ** 2 * da_mean       # E_sq_x_da_mean
+    Phi[:, 25] = E_scaled * da_max             # soc_x_da_max
+    if raw_dim and raw is not None:
+        Phi[:, N_BASIS:N_BASIS + raw_dim] = raw
+    if efa_dim and efa is not None:
+        Phi[:, N_BASIS + raw_dim:] = efa
 
     return Phi
 
@@ -150,14 +226,14 @@ class Policy:
         soh_nodes : (n_soh_nodes,) — fraction
         dt_h      : float — half-hour step in hours
     """
-    beta:       np.ndarray             # (T, J, K, 14)
+    beta:       np.ndarray             # (T, J, K, N_BASIS)
     soc_grid:   np.ndarray             # (J,)
     soh_nodes:  np.ndarray             # (K,)
     modes:      List[DispatchMode]
     dt_h:       float
     n_steps:    int
     n_paths:    int
-    cont_beta:  Optional[np.ndarray] = None   # (T, J, K, M, 14); None → legacy
+    cont_beta:  Optional[np.ndarray] = None   # (T, J, K, M, N_BASIS); None -> legacy
     diagnostics: Dict[str, float] = field(default_factory=dict)
 
 
@@ -213,7 +289,10 @@ class LSMCSolver:
         self.lsmc    = lsmc_cfg
         self.deg     = deg_cfg
         self.fin     = fin_cfg
-        self.modes   = modes if modes is not None else DEFAULT_MODES
+        self.bm_levels = lsmc_cfg.get('bm_levels', None)
+        self.p_bm_activation = float(lsmc_cfg.get('p_bm_activation', 0.12))
+        self.sustain_bm_hh = int(lsmc_cfg.get('sustain_bm_hh', 4))
+        self.modes   = modes if modes is not None else enumerate_modes(bm_levels=self.bm_levels)
         self.verbose = verbose
         self.hpfc_params = hpfc_params
         # Half-hourly HPFC prices used to compute the forward-carry basis feature.
@@ -221,6 +300,59 @@ class LSMCSolver:
             np.asarray(hpfc_curve, dtype=np.float32) if hpfc_curve is not None else None
         )
         self._fwd_window_hh = int(lsmc_cfg.get('fwd_window_hh', 16))
+        self._da_fwd_feature_hh = int(lsmc_cfg.get('da_forward_feature_hh', 48))
+        self._da_fwd_feature_mode = str(
+            lsmc_cfg.get("da_forward_feature_mode", "summary")
+        ).strip().lower()
+        if self._da_fwd_feature_mode in {"", "none"}:
+            self._da_fwd_feature_mode = "summary"
+        if self._da_fwd_feature_mode not in {"summary", "raw", "raw48", "efa_blocks"}:
+            raise ValueError(
+                "da_forward_feature_mode must be 'summary', 'raw', 'raw48', or "
+                f"'efa_blocks'; got {self._da_fwd_feature_mode!r}"
+            )
+        default_raw_count = (
+            self._da_fwd_feature_hh
+            if self._da_fwd_feature_mode not in {"summary", "efa_blocks"}
+            else 0
+        )
+        self._da_fwd_raw_count = int(
+            lsmc_cfg.get("da_forward_raw_count_hh", default_raw_count)
+        )
+        if self._da_fwd_feature_mode in {"summary", "efa_blocks"}:
+            self._da_fwd_raw_count = 0
+        self._da_fwd_raw_count = max(
+            0,
+            min(self._da_fwd_raw_count, max(1, self._da_fwd_feature_hh)),
+        )
+        if self._da_fwd_raw_count:
+            self._da_fwd_raw_offsets = np.linspace(
+                0,
+                max(0, self._da_fwd_feature_hh - 1),
+                self._da_fwd_raw_count,
+                dtype=np.int32,
+            )
+        else:
+            self._da_fwd_raw_offsets = np.zeros(0, dtype=np.int32)
+        # EFA-block features: 6 block means + 6 block spreads = 12 extra features.
+        # Only active when mode is "efa_blocks" and W=48 is divisible by _N_EFA_BLOCKS.
+        self._da_fwd_efa_count = (
+            2 * _N_EFA_BLOCKS
+            if (
+                self._da_fwd_feature_mode == "efa_blocks"
+                and self._da_fwd_feature_hh % _N_EFA_BLOCKS == 0
+            )
+            else 0
+        )
+        self._basis_dim = N_BASIS + int(self._da_fwd_raw_count) + self._da_fwd_efa_count
+        self._basis_names = (
+            BASIS_NAMES
+            + [f"da_fwd_raw_{int(offset) + 1:02d}" for offset in self._da_fwd_raw_offsets]
+            + [f"da_fwd_efa_mean_b{b}" for b in range(_N_EFA_BLOCKS)]
+            * (1 if self._da_fwd_efa_count else 0)
+            + [f"da_fwd_efa_spread_b{b}" for b in range(_N_EFA_BLOCKS)]
+            * (1 if self._da_fwd_efa_count else 0)
+        )
 
         # Derived constants
         self.P_bar    = float(asset_cfg['power_mw'])
@@ -252,6 +384,14 @@ class LSMCSolver:
         # Degradation shadow price
         self.deg_cost = float(deg_cfg.get('lambda_deg_init_gbp_mwh', 6.0))
         self.vom      = float(asset_cfg.get('vom_gbp_mwh', 1.2))
+        self.imbalance_cashflow_mode = str(
+            lsmc_cfg.get("imbalance_cashflow_mode", "discharge_only")
+        )
+        self.delta_imb_scale = float(lsmc_cfg.get("delta_imb_scale", 1.0))
+        self.imbalance_signal_lag_hh = max(
+            0,
+            int(lsmc_cfg.get("imbalance_signal_lag_hh", 1)),
+        )
         self.ridge_alpha = float(lsmc_cfg.get('ridge_alpha', 1e-3))
         self.continuation_cap = float(
             lsmc_cfg.get(
@@ -260,11 +400,15 @@ class LSMCSolver:
             )
         )
         self.reserve_sustain_h = float(lsmc_cfg.get('reserve_sustain_h', 0.5))
+        self.p_activation = float(lsmc_cfg.get('p_activation', 0.12))
+        self._progress_path = lsmc_cfg.get("progress_path")
+        self._progress_interval_pct = float(lsmc_cfg.get("progress_interval_pct", 10.0))
 
         # Pre-stack mode fractions as arrays (M,) for vectorised dispatch
         self._net_fracs = np.array([m.net_frac  for m in self.modes], np.float32)
         self._dc_fracs  = np.array([m.r_dc_frac for m in self.modes], np.float32)
         self._qr_fracs  = np.array([m.r_qr_frac for m in self.modes], np.float32)
+        self._bm_fracs  = np.array([m.r_bm_frac for m in self.modes], np.float32)
 
         # EFA block lookup (0..5) given half-hour index 0..47
         self._efa = np.array([hh // 8 for hh in range(48)], dtype=np.int32)
@@ -301,12 +445,42 @@ class LSMCSolver:
                     E_min_frac=self.E_min_fr,
                     E_max_frac=self.E_max_fr,
                     energy_mwh=self.E_name,
+                    sustain_bm_hh=self.sustain_bm_hh,
                     eta_charge=self.eta_c,
                     eta_discharge=self.eta_d,
                     dt_h=self.dt_h,
                     reserve_sustain_h=self.reserve_sustain_h,
                 )
         self._feasible_jkm = feasible_jkm
+
+    def _emit_progress(
+        self,
+        phase: str,
+        progress_pct: float,
+        *,
+        step: int,
+        total_steps: int,
+        elapsed_s: float,
+    ) -> None:
+        """Append a lightweight progress event for notebook supervisors."""
+        if not self._progress_path:
+            return
+        event = {
+            "timestamp": time.strftime("%Y-%m-%dT%H:%M:%S"),
+            "pid": os.getpid(),
+            "phase": phase,
+            "progress_pct": float(progress_pct),
+            "step": int(step),
+            "total_steps": int(total_steps),
+            "elapsed_s": float(elapsed_s),
+            "duration_h": float(self.asset.get("duration_h", self.E_name / self.P_bar)),
+        }
+        try:
+            with open(self._progress_path, "a", encoding="utf-8") as fh:
+                fh.write(json.dumps(event) + "\n")
+        except OSError:
+            # Progress reporting must never affect valuation.
+            pass
 
     def _hpfc_forward_spread(self, T: int) -> np.ndarray:
         """
@@ -333,6 +507,88 @@ class LSMCSolver:
         windows = sliding_window_view(curve[1:], window_shape=W)   # (T+..., W)
         fwd_max = windows[:T].max(axis=1)                          # (T,)
         return (fwd_max - curve[:T]).astype(np.float32)
+
+    def _da_forward_strip_features(
+        self,
+        P_da_all: np.ndarray,
+        T: int,
+    ) -> Dict[str, np.ndarray]:
+        """
+        Compute path-varying DA forward-strip features for each decision step.
+
+        Features are based on P_da[n, t+1 : t+1+W], where W defaults to 48 HH.
+        Near the horizon the strip is edge-padded, matching the HPFC carry
+        feature's boundary treatment and avoiding shorter-window scale shifts.
+        """
+        W = max(1, int(self._da_fwd_feature_hh))
+        P = np.asarray(P_da_all[:, :T], dtype=np.float32)
+        pad_source = P
+        if pad_source.shape[1] == 0:
+            z = np.zeros((P.shape[0], T), dtype=np.float32)
+            return {"max": z, "min": z, "mean": z, "spread": z}
+        needed = T + W + 1
+        if P_da_all.shape[1] < needed:
+            pad_width = needed - P_da_all.shape[1]
+            pad_source = np.pad(
+                np.asarray(P_da_all, dtype=np.float32),
+                ((0, 0), (0, pad_width)),
+                mode="edge",
+            )
+        else:
+            pad_source = np.asarray(P_da_all[:, :needed], dtype=np.float32)
+
+        from numpy.lib.stride_tricks import sliding_window_view
+
+        future = pad_source[:, 1:]
+        windows = sliding_window_view(future, window_shape=W, axis=1)[:, :T, :]
+        fwd_max = windows.max(axis=2).astype(np.float32)
+        fwd_min = windows.min(axis=2).astype(np.float32)
+        fwd_mean = windows.mean(axis=2).astype(np.float32)
+        out = {
+            "max": fwd_max,
+            "min": fwd_min,
+            "mean": fwd_mean,
+            "spread": (fwd_max - fwd_min).astype(np.float32),
+        }
+        if self._da_fwd_raw_count:
+            out["raw"] = windows[:, :T, self._da_fwd_raw_offsets].astype(
+                np.float32,
+                copy=True,
+            )
+        if self._da_fwd_efa_count:
+            # Reshape (N, T, W) → (N, T, n_blocks, block_size) and aggregate.
+            # Only reached when W % _N_EFA_BLOCKS == 0 (checked in __init__).
+            block_size = W // _N_EFA_BLOCKS
+            win_blocks = windows[:, :T, :].reshape(
+                windows.shape[0], T, _N_EFA_BLOCKS, block_size
+            ).astype(np.float32)
+            efa_means = win_blocks.mean(axis=3)                              # (N, T, 6)
+            efa_spreads = win_blocks.max(axis=3) - win_blocks.min(axis=3)   # (N, T, 6)
+            out["efa_blocks"] = np.concatenate(
+                [efa_means, efa_spreads], axis=2
+            ).astype(np.float32)                                             # (N, T, 12)
+        return out
+
+    def _imbalance_signal_matrix(self, delta_realized_all: np.ndarray) -> np.ndarray:
+        """
+        Build the imbalance signal observable at dispatch time.
+
+        The realised settlement basis at time t is not known when the action is
+        chosen.  The conservative default is therefore a one-HH lag:
+        signal[t] = realised[t-1], edge-filled at the first step because the
+        path bundle does not carry a pre-horizon realised value.
+        """
+        delta_realized_all = np.asarray(delta_realized_all, dtype=np.float32)
+        lag = int(self.imbalance_signal_lag_hh)
+        if lag <= 0 or delta_realized_all.shape[1] == 0:
+            return delta_realized_all.copy()
+
+        signal = np.empty_like(delta_realized_all, dtype=np.float32)
+        edge_width = min(lag, delta_realized_all.shape[1])
+        signal[:, :edge_width] = delta_realized_all[:, :1]
+        if lag < delta_realized_all.shape[1]:
+            signal[:, lag:] = delta_realized_all[:, :-lag]
+        return signal
 
     def _intraday_spread_matrix(self, bundle: PathBundle, P_da_all: np.ndarray) -> np.ndarray:
         """
@@ -384,25 +640,29 @@ class LSMCSolver:
 
         Returns
         -------
-        Policy with regression coefficients β[t, j, k, 14]
+        Policy with regression coefficients beta[t, j, k, N_BASIS]
         """
         T  = bundle.n_steps
         N  = bundle.n_paths
         J  = self.n_soc
         K  = self.n_soh
         M  = len(self.modes)
+        B  = self._basis_dim
         dt = self.dt_h
 
         _bwd_t0 = time.time()
         _print_stride = max(1, T // 10)   # print ~10 progress lines
+        _progress_interval = max(1.0, self._progress_interval_pct)
+        _last_progress_bucket = -1
 
         if self.verbose:
             print(f"LSMC backward: T={T} steps, N={N} paths, "
-                  f"J={J} SoC nodes, K={K} SoH nodes, M={M} modes", flush=True)
+                  f"J={J} SoC nodes, K={K} SoH nodes, M={M} modes, "
+                  f"B={B} basis", flush=True)
 
         # Coefficient store
-        beta      = np.zeros((T, J, K,    N_BASIS), dtype=np.float32)
-        cont_beta = np.zeros((T, J, K, M, N_BASIS), dtype=np.float32)
+        beta      = np.zeros((T, J, K,    B), dtype=np.float32)
+        cont_beta = np.zeros((T, J, K, M, B), dtype=np.float32)
         diagnostics = {
             "regression_count": 0,
             "nonfinite_beta_count": 0,
@@ -422,6 +682,15 @@ class LSMCSolver:
             "continuation_clip_regression_count": 0,
             "continuation_value_cap_gbp": float(self.continuation_cap),
             "intraday_spread_std": 0.0,
+            "da_fwd_window_hh": float(self._da_fwd_feature_hh),
+            "da_fwd_raw_count_hh": float(self._da_fwd_raw_count),
+            "da_fwd_efa_count": float(self._da_fwd_efa_count),
+            "basis_dim": float(B),
+            "da_fwd_spread_std": 0.0,
+            "da_fwd_mean_std": 0.0,
+            "imbalance_signal_lag_hh": float(self.imbalance_signal_lag_hh),
+            "imbalance_realized_std": 0.0,
+            "imbalance_signal_std": 0.0,
         }
 
         # Continuation value store: V[j, k, n] = Ê[V_{t+1}(E_j, SoH_k, S_n)]
@@ -431,9 +700,16 @@ class LSMCSolver:
         # Pre-extract and cap market arrays. These are valuation stabilisers for
         # dev notebooks; production calibration should reduce the need for caps.
         P_da_all   = np.exp(np.clip(bundle.ln_P_base, -100.0, np.log(500.0))).astype(np.float32)
-        delta_all  = np.clip(bundle.delta_imb, -500.0, 500.0).astype(np.float32)
+        delta_realized_all = (
+            np.clip(bundle.delta_imb, -500.0, 500.0).astype(np.float32)
+            * self.delta_imb_scale
+        )
+        delta_signal_all = self._imbalance_signal_matrix(delta_realized_all)
         pi_dc_all  = np.clip(bundle.pi['DC_Low'], 0.0, 100.0).astype(np.float32)
         pi_qr_all  = np.clip(bundle.pi.get('QR_Pos', bundle.pi['DC_Low']), 0.0, 100.0).astype(np.float32)
+        pi_bm_all  = np.clip(bundle.pi_bm, 0.0, 200.0).astype(np.float32)
+        diagnostics["imbalance_realized_std"] = float(np.std(delta_realized_all[:, :T]))
+        diagnostics["imbalance_signal_std"] = float(np.std(delta_signal_all[:, :T]))
 
         # Intraday spread proxy: use lambda_1 loading on peak vs trough HH
         # If HPFC params aren't passed, approximate as zero
@@ -442,6 +718,9 @@ class LSMCSolver:
 
         # HPFC forward-carry: deterministic signal, shape (T,)
         hpfc_fwd_spread = self._hpfc_forward_spread(T)
+        da_fwd = self._da_forward_strip_features(P_da_all, T)
+        diagnostics["da_fwd_spread_std"] = float(np.std(da_fwd["spread"][:, :T]))
+        diagnostics["da_fwd_mean_std"] = float(np.std(da_fwd["mean"][:, :T]))
 
         # Pre-compute next-SoC table: E_next[j, m] — (J, M)
         # For each SoC node and each mode, deterministic E' (before SoH scaling)
@@ -463,6 +742,17 @@ class LSMCSolver:
 
         # Backward loop
         for t in range(T - 1, -1, -1):
+            progress_pct = 100.0 * (T - 1 - t) / max(T - 1, 1)
+            progress_bucket = int(progress_pct // _progress_interval)
+            if progress_bucket > _last_progress_bucket:
+                _last_progress_bucket = progress_bucket
+                self._emit_progress(
+                    "backward",
+                    progress_bucket * _progress_interval,
+                    step=T - 1 - t,
+                    total_steps=T,
+                    elapsed_s=time.time() - _bwd_t0,
+                )
             if self.verbose and (t == T - 1 or (T - 1 - t) % _print_stride == 0):
                 pct = 100 * (T - t) / T
                 elapsed = time.time() - _bwd_t0
@@ -470,7 +760,7 @@ class LSMCSolver:
 
             # Market state at step t
             P_da  = P_da_all[:, t]       # (N,)
-            delta = delta_all[:, t]      # (N,)
+            delta_signal = delta_signal_all[:, t]  # (N,)
             pi_dc = pi_dc_all[:, t]      # (N,)
             pi_qr = pi_qr_all[:, t]      # (N,)
             P_id  = P_id_spr_all[:, t]   # (N,)
@@ -482,8 +772,9 @@ class LSMCSolver:
             # Cashflow matrix — same for all SoC nodes (CF doesn't depend on E)
             # CF: (N, M)
             CF = cashflow_batch(
-                self.modes, P_da, delta, pi_dc, pi_qr,
-                self.P_bar, dt, self.deg_cost, self.vom,
+                self.modes, P_da, delta_signal, pi_dc, pi_qr, pi_bm_all[:, t],
+                self.P_bar, dt, self.p_bm_activation, self.deg_cost, self.vom,
+                imbalance_cashflow_mode=self.imbalance_cashflow_mode,
             )
 
             # Loop over SoH nodes and SoC nodes
@@ -517,9 +808,22 @@ class LSMCSolver:
                     Y = Q.max(axis=1)
 
                     # Regression
-                    Phi = basis_matrix(P_da, P_id, delta, pi_dc, pi_qr,
-                                       E_j, t_hh, efa_block,
-                                       hpfc_fwd_spr=float(hpfc_fwd_spread[t]))   # (N, 15)
+                    Phi = basis_matrix(P_da, P_id, delta_signal, pi_dc, pi_qr,
+                                       pi_bm_all[:, t], E_j, t_hh, efa_block,
+                                       hpfc_fwd_spr=float(hpfc_fwd_spread[t]),
+                                       da_fwd_max=da_fwd["max"][:, t],
+                                       da_fwd_min=da_fwd["min"][:, t],
+                                       da_fwd_mean=da_fwd["mean"][:, t],
+                                       da_fwd_spread=da_fwd["spread"][:, t],
+                                       da_fwd_raw=(
+                                           da_fwd["raw"][:, t, :]
+                                           if self._da_fwd_raw_count else None
+                                       ),
+                                       da_fwd_efa_blocks=(
+                                           da_fwd["efa_blocks"][:, t, :]
+                                           if self._da_fwd_efa_count else None
+                                       ),
+                                       e_max=self.E_name)
 
                     # OLS with feature standardisation and ridge regularisation.
                     # Work in float64 to avoid float32 rounding in the normal
@@ -541,7 +845,7 @@ class LSMCSolver:
                     raw_sd = Phi64.std(axis=0)
                     # Drop constant columns (E and any cross-product features
                     # that happen to be zero-variance at this node/step).
-                    active = np.ones(N_BASIS, dtype=bool)
+                    active = np.ones(B, dtype=bool)
                     active[1:] = raw_sd[1:] > 1e-8
                     active_count = int(np.sum(active))
                     diagnostics["active_feature_count_min"] = min(
@@ -580,9 +884,9 @@ class LSMCSolver:
                         diagnostics["fallback_zero_count"] += 1
                         gamma_active = np.zeros(active_count)
 
-                    gamma = np.zeros(N_BASIS, dtype=np.float64)
+                    gamma = np.zeros(B, dtype=np.float64)
                     gamma[active] = gamma_active
-                    b = np.zeros(N_BASIS, dtype=np.float64)
+                    b = np.zeros(B, dtype=np.float64)
                     # Undo feature standardisation then undo target normalisation
                     b[active] = gamma_active * y_scale / sd[active]
                     b[0] = (gamma[0] - np.sum(gamma[1:] * mu[1:] / sd[1:])) * y_scale
@@ -610,9 +914,9 @@ class LSMCSolver:
                             gamma_cont_a = np.zeros((active_count, M))
                     except np.linalg.LinAlgError:
                         gamma_cont_a = np.zeros((active_count, M))
-                    gamma_cont = np.zeros((N_BASIS, M), dtype=np.float64)
+                    gamma_cont = np.zeros((B, M), dtype=np.float64)
                     gamma_cont[active, :] = gamma_cont_a
-                    b_cont = np.zeros((N_BASIS, M), dtype=np.float64)
+                    b_cont = np.zeros((B, M), dtype=np.float64)
                     b_cont[active, :] = (
                         gamma_cont_a * v_scales[None, :] / sd[active, None]
                     )
@@ -655,6 +959,14 @@ class LSMCSolver:
                 f"rank_def={int(diagnostics['sample_rank_deficient_count'])}/"
                 f"{int(diagnostics['sampled_regression_count'])}"
             )
+
+        self._emit_progress(
+            "backward",
+            100.0,
+            step=T,
+            total_steps=T,
+            elapsed_s=time.time() - _bwd_t0,
+        )
 
         if diagnostics["target_std_min"] == float("inf"):
             diagnostics["target_std_min"] = 0.0
@@ -765,6 +1077,7 @@ class LSMCSolver:
         net_mw = self._net_fracs.astype(np.float32) * self.P_bar
         dc_mw = self._dc_fracs.astype(np.float32) * self.P_bar
         qr_mw = self._qr_fracs.astype(np.float32) * self.P_bar
+        bm_mw = self._bm_fracs.astype(np.float32) * self.P_bar
         res_mw = dc_mw + qr_mw
 
         E_min = np.float32(self.E_min_fr * self.E_name)
@@ -774,10 +1087,12 @@ class LSMCSolver:
             np.abs(self._net_fracs)[None, :]
             + self._dc_fracs[None, :]
             + self._qr_fracs[None, :]
+            + self._bm_fracs[None, :]
         ) <= (SoH[:, None] + 1e-6)
 
         sustain_down = res_mw[None, :] * self.reserve_sustain_h / self.eta_d
         sustain_up = res_mw[None, :] * self.reserve_sustain_h * self.eta_c
+        bm_sustain = bm_mw[None, :] * (self.sustain_bm_hh * 0.5) / self.eta_d
         E_after = np.where(
             net_mw[None, :] > 0,
             E_curr[:, None] - net_mw[None, :] / self.eta_d * self.dt_h,
@@ -786,7 +1101,7 @@ class LSMCSolver:
 
         return (
             headroom
-            & (E_curr[:, None] - sustain_down >= E_min - 1e-3)
+            & (E_curr[:, None] - sustain_down - bm_sustain >= E_min - 1e-3)
             & (E_curr[:, None] + sustain_up <= E_max[:, None] + 1e-3)
             & (E_after >= E_min - 1e-3)
             & (E_after <= E_max[:, None] + 1e-3)
@@ -840,17 +1155,24 @@ class LSMCSolver:
         pv_imb_paths   = np.zeros(N, dtype=np.float64)
         pv_dc_paths    = np.zeros(N, dtype=np.float64)
         pv_qr_paths    = np.zeros(N, dtype=np.float64)
+        pv_bm_paths    = np.zeros(N, dtype=np.float64)
         pv_costs_paths = np.zeros(N, dtype=np.float64)
 
         # Pre-extract and cap prices consistently with backward().
         P_da_all  = np.exp(np.clip(bundle.ln_P_base, -100.0, np.log(500.0))).astype(np.float32)
-        delta_all = np.clip(bundle.delta_imb, -500.0, 500.0).astype(np.float32)
+        delta_realized_all = (
+            np.clip(bundle.delta_imb, -500.0, 500.0).astype(np.float32)
+            * self.delta_imb_scale
+        )
+        delta_signal_all = self._imbalance_signal_matrix(delta_realized_all)
         pi_dc_all = np.clip(bundle.pi['DC_Low'], 0.0, 100.0).astype(np.float32)
         pi_qr_all = np.clip(bundle.pi.get('QR_Pos', bundle.pi['DC_Low']), 0.0, 100.0).astype(np.float32)
+        pi_bm_all = np.clip(bundle.pi_bm, 0.0, 200.0).astype(np.float32)
         P_id_spr_all = self._intraday_spread_matrix(bundle, P_da_all)
 
         # HPFC forward-carry signal, shape (T,)
         hpfc_fwd_spread = self._hpfc_forward_spread(T)
+        da_fwd = self._da_forward_strip_features(P_da_all, T)
 
         # SoH fade rate per HH step
         # Simplified: linear SoH degradation at cycle_rate EFCs/year
@@ -865,6 +1187,7 @@ class LSMCSolver:
         M = len(self.modes)
         action_counts = np.zeros(M, dtype=np.int64)
         action_cf_sum = np.zeros(M, dtype=np.float64)
+        action_decision_cf_sum = np.zeros(M, dtype=np.float64)
         action_cont_sum = np.zeros(M, dtype=np.float64)
         action_q_sum = np.zeros(M, dtype=np.float64)
         q_gap_sum = 0.0
@@ -874,17 +1197,31 @@ class LSMCSolver:
 
         _fwd_t0 = time.time()
         _fwd_print_stride = max(1, T // 10)
+        _fwd_progress_interval = max(1.0, self._progress_interval_pct)
+        _last_fwd_progress_bucket = -1
 
         if self.verbose:
             print(f"LSMC forward:  T={T}, N={N}", flush=True)
 
         for t in range(T):
+            progress_pct = 100.0 * t / max(T, 1)
+            progress_bucket = int(progress_pct // _fwd_progress_interval)
+            if progress_bucket > _last_fwd_progress_bucket:
+                _last_fwd_progress_bucket = progress_bucket
+                self._emit_progress(
+                    "forward_policy",
+                    min(100.0, progress_bucket * _fwd_progress_interval),
+                    step=t,
+                    total_steps=T,
+                    elapsed_s=time.time() - _fwd_t0,
+                )
             if self.verbose and t % _fwd_print_stride == 0:
                 pct = 100 * t / T
                 elapsed = time.time() - _fwd_t0
                 print(f"  fwd {pct:5.1f}%  t={t:5d}  {elapsed:6.1f}s elapsed", flush=True)
             P_da  = P_da_all[:, t]
-            delta = delta_all[:, t]
+            delta_signal = delta_signal_all[:, t]
+            delta_realized = delta_realized_all[:, t]
             pi_dc = pi_dc_all[:, t]
             pi_qr = pi_qr_all[:, t]
 
@@ -906,8 +1243,9 @@ class LSMCSolver:
 
             # 3. Cashflow matrix — vectorised over all (N, M)
             CF = cashflow_batch(
-                self.modes, P_da, delta, pi_dc, pi_qr,
-                self.P_bar, dt, self.deg_cost, self.vom,
+                self.modes, P_da, delta_signal, pi_dc, pi_qr, pi_bm_all[:, t],
+                self.P_bar, dt, self.p_bm_activation, self.deg_cost, self.vom,
+                imbalance_cashflow_mode=self.imbalance_cashflow_mode,
             )   # (N, M)
 
             # 4. Continuation value — fully vectorised, no Python loop over j/k/m.
@@ -930,32 +1268,34 @@ class LSMCSolver:
             elif policy.cont_beta is not None:
                 # Non-anticipative: evaluate per-mode continuation regressions
                 # fitted on S(t) during backward induction.  No t+1 price data.
-                P_c   = np.clip(P_da, -100.0, 500.0).astype(np.float32) / 100.0
-                dlt_c = np.clip(delta, -500.0, 500.0).astype(np.float32) / 100.0
-                dc_c  = np.clip(pi_dc,  0.0, 100.0).astype(np.float32) / 20.0
-                qr_c  = np.clip(pi_qr,  0.0, 100.0).astype(np.float32) / 20.0
-                p_id_c = np.clip(P_id_spr_all[:, t], -200.0, 200.0).astype(np.float32) / 100.0
-                E_sc  = (E_n / 100.0).astype(np.float32)
-                fwd_c = np.float32(
-                    np.clip(hpfc_fwd_spread[t], -100.0, 100.0) / 100.0
+                phi_t = basis_matrix(
+                    P_da,
+                    P_id_spr_all[:, t],
+                    delta_signal,
+                    pi_dc,
+                    pi_qr,
+                    pi_bm_all[:, t],
+                    E_n,
+                    t_hh,
+                    efa_block,
+                    hpfc_fwd_spr=float(hpfc_fwd_spread[t]),
+                    da_fwd_max=da_fwd["max"][:, t],
+                    da_fwd_min=da_fwd["min"][:, t],
+                    da_fwd_mean=da_fwd["mean"][:, t],
+                    da_fwd_spread=da_fwd["spread"][:, t],
+                    da_fwd_raw=(
+                        da_fwd["raw"][:, t, :]
+                        if self._da_fwd_raw_count else None
+                    ),
+                    da_fwd_efa_blocks=(
+                        da_fwd["efa_blocks"][:, t, :]
+                        if self._da_fwd_efa_count else None
+                    ),
+                    e_max=self.E_name,
                 )
-                phi_t = np.empty((N, N_BASIS), dtype=np.float32)
-                phi_t[:, 0]  = 1.0
-                phi_t[:, 1]  = P_c
-                phi_t[:, 2]  = P_c ** 2
-                phi_t[:, 3]  = P_c ** 3
-                phi_t[:, 4]  = p_id_c
-                phi_t[:, 5]  = dlt_c
-                phi_t[:, 6]  = dc_c
-                phi_t[:, 7]  = qr_c
-                phi_t[:, 8]  = E_sc
-                phi_t[:, 9]  = E_sc ** 2
-                phi_t[:, 10] = P_c * E_sc
-                phi_t[:, 11] = P_c * dlt_c
-                phi_t[:, 12] = P_c * dc_c
-                phi_t[:, 13] = dc_c * qr_c
-                phi_t[:, 14] = fwd_c
                 # cont_beta[t, j, k, m, :] · phi(S(t)) → (N, M)
+                B_cont = policy.cont_beta.shape[-1]
+                phi_t = phi_t[:, :B_cont]
                 E_max_n = self.E_max_fr * self.E_name * SoH_n
                 hi_feasible = self.soc_grid[j_hi_arr] <= E_max_n + 1e-3
                 alpha_eff = np.where(hi_feasible, alpha_j, 0.0).astype(np.float32)
@@ -975,41 +1315,53 @@ class LSMCSolver:
                 # Legacy anticipative fallback for policies saved without cont_beta.
                 t_next = t + 1
                 P_next = P_da_all[:, t_next]
-                P_c_next = np.clip(P_next, -100.0, 500.0).astype(np.float32) / 100.0
-                dlt_c_next = np.clip(delta_all[:, t_next], -500.0, 500.0).astype(np.float32) / 100.0
-                dc_c_next = np.clip(pi_dc_all[:, t_next], 0.0, 100.0).astype(np.float32) / 20.0
-                qr_c_next = np.clip(pi_qr_all[:, t_next], 0.0, 100.0).astype(np.float32) / 20.0
-                p_id_c_next = np.clip(P_id_spr_all[:, t_next], -200.0, 200.0).astype(np.float32) / 100.0
-                fwd_c_next = np.float32(np.clip(hpfc_fwd_spread[t_next], -100.0, 100.0) / 100.0)
-                phi_next_base = np.empty((N, 12), dtype=np.float32)
-                phi_next_base[:, 0] = 1.0
-                phi_next_base[:, 1] = P_c_next
-                phi_next_base[:, 2] = P_c_next ** 2
-                phi_next_base[:, 3] = P_c_next ** 3
-                phi_next_base[:, 4] = p_id_c_next
-                phi_next_base[:, 5] = dlt_c_next
-                phi_next_base[:, 6] = dc_c_next
-                phi_next_base[:, 7] = qr_c_next
-                phi_next_base[:, 8]  = P_c_next * dlt_c_next
-                phi_next_base[:, 9]  = P_c_next * dc_c_next
-                phi_next_base[:, 10] = dc_c_next * qr_c_next
-                phi_next_base[:, 11] = fwd_c_next
                 j_next_nm = np.clip(
                     np.searchsorted(self.soc_grid, E_next_nm, side='right') - 1,
                     0,
                     self.n_soc - 1,
                 )
                 k_next_nm = np.broadcast_to(k_arr[:, None], (N, M))
-                b_nm = policy.beta[t_next, j_next_nm, k_next_nm, :]   # (N, M, 15)
-                b_base_nm = np.concatenate(
-                    [b_nm[:, :, :8], b_nm[:, :, 11:15]], axis=2
-                )
-                E_sc_nm = (E_next_nm / 100.0).astype(np.float32)
+                b_nm = policy.beta[t_next, j_next_nm, k_next_nm, :]   # (N, M, N_BASIS)
+                B = b_nm.shape[2]
+                phi_next = basis_matrix(
+                    P_next,
+                    P_id_spr_all[:, t_next],
+                    delta_signal_all[:, t_next],
+                    pi_dc_all[:, t_next],
+                    pi_qr_all[:, t_next],
+                    pi_bm_all[:, t_next],
+                    np.zeros(N, dtype=np.float32),
+                    t_next % 48,
+                    int(self._efa[t_next % 48]),
+                    hpfc_fwd_spr=float(hpfc_fwd_spread[t_next]),
+                    da_fwd_max=da_fwd["max"][:, t_next],
+                    da_fwd_min=da_fwd["min"][:, t_next],
+                    da_fwd_mean=da_fwd["mean"][:, t_next],
+                    da_fwd_spread=da_fwd["spread"][:, t_next],
+                    da_fwd_raw=(
+                        da_fwd["raw"][:, t_next, :]
+                        if self._da_fwd_raw_count else None
+                    ),
+                    da_fwd_efa_blocks=(
+                        da_fwd["efa_blocks"][:, t_next, :]
+                        if self._da_fwd_efa_count else None
+                    ),
+                    e_max=self.E_name,
+                )[:, :B]
+                phi_next_nm = np.broadcast_to(
+                    phi_next[:, None, :],
+                    (N, M, B),
+                ).copy()
+                E_sc_nm = (E_next_nm / max(self.E_name, 1.0)).astype(np.float32)
+                if B > 8:
+                    phi_next_nm[:, :, 8] = E_sc_nm
+                if B > 9:
+                    phi_next_nm[:, :, 9] = E_sc_nm ** 2
+                if B > 10:
+                    P_c_next = np.clip(P_next, -100.0, 500.0).astype(np.float32) / 100.0
+                    phi_next_nm[:, :, 10] = P_c_next[:, None] * E_sc_nm
                 cont = np.clip(
-                    np.sum(phi_next_base[:, None, :] * b_base_nm, axis=2)
-                    + b_nm[:, :, 8] * E_sc_nm
-                    + b_nm[:, :, 9] * E_sc_nm ** 2
-                    + b_nm[:, :, 10] * P_c_next[:, None] * E_sc_nm,
+                    np.sum(phi_next_nm * b_nm, axis=2),
                     -self.continuation_cap,
                     self.continuation_cap,
                 ).astype(np.float32)
@@ -1043,10 +1395,36 @@ class LSMCSolver:
             efc_n = throughput_mwh / (self.E_name * 2.0)            # EFC fraction
             SoH_n = np.clip(SoH_n - efc_n * soh_per_efc, 0.72, 1.0).astype(np.float32)
 
-            # Cashflow at chosen mode
-            cf_n = CF[np.arange(N), m_star]   # (N,)
+            # Decision Q used the lagged imbalance signal. Settlement cashflow
+            # uses the realised imbalance basis at t for the chosen action.
+            decision_cf_n = CF[np.arange(N), m_star]   # (N,)
             cont_n = cont[np.arange(N), m_star]
             q_n = Q[np.arange(N), m_star]
+
+            net_ch = net_fracs[m_star]                         # (N,)
+            d_ch   = np.maximum(net_ch, 0.0) * self.P_bar       # (N,)
+            c_ch   = np.maximum(-net_ch, 0.0) * self.P_bar      # (N,)
+            dc_ch  = self._dc_fracs[m_star] * self.P_bar       # (N,)
+            qr_ch  = self._qr_fracs[m_star] * self.P_bar       # (N,)
+            bm_ch  = self._bm_fracs[m_star] * self.P_bar       # (N,)
+
+            da_real = P_da * net_ch * self.P_bar * dt
+            if self.imbalance_cashflow_mode == "discharge_only":
+                imb_real = delta_realized * d_ch * dt
+            elif self.imbalance_cashflow_mode == "net":
+                imb_real = delta_realized * net_ch * self.P_bar * dt
+            else:
+                raise ValueError(
+                    "imbalance_cashflow_mode must be 'discharge_only' or 'net'; "
+                    f"got {self.imbalance_cashflow_mode!r}"
+                )
+            dc_real = pi_dc * dc_ch * dt
+            qr_real = pi_qr * qr_ch * dt
+            bm_real = pi_bm_all[:, t] * bm_ch * self.p_bm_activation * dt
+            costs_real = (self.deg_cost + self.vom) * (d_ch + c_ch) * dt
+            cf_n = (
+                da_real + imb_real + dc_real + qr_real + bm_real - costs_real
+            ).astype(np.float32)
             if M > 1:
                 top2 = np.partition(Q, -2, axis=1)[:, -2:]
                 runner_up_q = top2[:, 0]
@@ -1060,6 +1438,7 @@ class LSMCSolver:
 
             action_counts += np.bincount(m_star, minlength=M)
             action_cf_sum += np.bincount(m_star, weights=cf_n, minlength=M)
+            action_decision_cf_sum += np.bincount(m_star, weights=decision_cf_n, minlength=M)
             action_cont_sum += np.bincount(m_star, weights=cont_n, minlength=M)
             action_q_sum += np.bincount(m_star, weights=q_n, minlength=M)
 
@@ -1072,19 +1451,13 @@ class LSMCSolver:
 
             # Per-source components for the chosen mode only — (N,) vectors.
             # Cheaper than indexing into the full (N, M) component matrices.
-            net_ch = net_fracs[m_star]                          # (N,)
-            d_ch   = np.maximum(net_ch, 0.0) * self.P_bar      # (N,)
-            c_ch   = np.maximum(-net_ch, 0.0) * self.P_bar     # (N,)
-            dc_ch  = self._dc_fracs[m_star] * self.P_bar       # (N,)
-            qr_ch  = self._qr_fracs[m_star] * self.P_bar       # (N,)
-
             disc_t = disc_factors[t]
-            pv_da_paths    += (P_da  * net_ch * self.P_bar * dt).astype(np.float64) * disc_t
-            pv_imb_paths   += (delta * d_ch   * dt).astype(np.float64)              * disc_t
-            pv_dc_paths    += (pi_dc * dc_ch  * dt).astype(np.float64)              * disc_t
-            pv_qr_paths    += (pi_qr * qr_ch  * dt).astype(np.float64)              * disc_t
-            pv_costs_paths += ((self.deg_cost + self.vom) * (d_ch + c_ch) * dt
-                               ).astype(np.float64) * disc_t
+            pv_da_paths    += da_real.astype(np.float64)    * disc_t
+            pv_imb_paths   += imb_real.astype(np.float64)   * disc_t
+            pv_dc_paths    += dc_real.astype(np.float64)    * disc_t
+            pv_qr_paths    += qr_real.astype(np.float64)    * disc_t
+            pv_bm_paths    += bm_real.astype(np.float64)    * disc_t
+            pv_costs_paths += costs_real.astype(np.float64) * disc_t
 
         # Discount cashflows
         pv_paths = (cf_store * disc_factors[None, :]).sum(axis=1)   # (N,)
@@ -1092,12 +1465,24 @@ class LSMCSolver:
         if self.verbose:
             print(f"  Forward pass complete. MTM P50 = £{np.median(pv_paths):,.0f}")
 
+        self._emit_progress(
+            "forward_policy",
+            100.0,
+            step=T,
+            total_steps=T,
+            elapsed_s=time.time() - _fwd_t0,
+        )
+
         total_decisions = int(action_counts.sum())
         action_diagnostics = {
             "total_decisions": total_decisions,
             "selected_cashflow_mean_gbp": float(action_cf_sum.sum() / total_decisions) if total_decisions else 0.0,
+            "selected_decision_cashflow_mean_gbp": (
+                float(action_decision_cf_sum.sum() / total_decisions) if total_decisions else 0.0
+            ),
             "selected_continuation_mean_gbp": float(action_cont_sum.sum() / total_decisions) if total_decisions else 0.0,
             "selected_q_mean_gbp": float(action_q_sum.sum() / total_decisions) if total_decisions else 0.0,
+            "imbalance_signal_lag_hh": int(self.imbalance_signal_lag_hh),
             "selected_q_gap_mean_gbp": float(q_gap_sum / q_gap_count) if q_gap_count else None,
             "selected_q_gap_min_gbp": float(q_gap_min) if np.isfinite(q_gap_min) else None,
             "selected_q_gap_le_1gbp_fraction": float(q_gap_small_count / q_gap_count) if q_gap_count else None,
@@ -1110,6 +1495,9 @@ class LSMCSolver:
                     "count": int(action_counts[i]),
                     "selected_cashflow_mean_gbp": (
                         float(action_cf_sum[i] / action_counts[i]) if action_counts[i] else None
+                    ),
+                    "selected_decision_cashflow_mean_gbp": (
+                        float(action_decision_cf_sum[i] / action_counts[i]) if action_counts[i] else None
                     ),
                     "selected_continuation_mean_gbp": (
                         float(action_cont_sum[i] / action_counts[i]) if action_counts[i] else None
@@ -1128,20 +1516,21 @@ class LSMCSolver:
             soc_paths      = soc_store,
             soh_paths      = soh_store,
             action_paths   = act_store,
-            mtm_mean       = float(np.mean(pv_paths)),
-            mtm_std        = float(np.std(pv_paths)),
-            mtm_p5         = float(np.percentile(pv_paths, 5)),
-            mtm_p95        = float(np.percentile(pv_paths, 95)),
+            mtm_mean       = float(np.mean(pv_paths))   if len(pv_paths) else float('nan'),
+            mtm_std        = float(np.std(pv_paths))    if len(pv_paths) else float('nan'),
+            mtm_p5         = float(np.percentile(pv_paths,  5)) if len(pv_paths) else float('nan'),
+            mtm_p95        = float(np.percentile(pv_paths, 95)) if len(pv_paths) else float('nan'),
             efc_total      = float(np.mean(
                 np.sum(np.maximum(-np.diff(soc_store, axis=1), 0.0), axis=1)
                 / max(self.E_name, 1.0)
-            )),
+            )) if len(pv_paths) else float('nan'),
             action_diagnostics = action_diagnostics,
             cf_breakdown = {
                 'da':        pv_da_paths.astype(np.float64),
                 'imbalance': pv_imb_paths.astype(np.float64),
                 'dc':        pv_dc_paths.astype(np.float64),
                 'qr':        pv_qr_paths.astype(np.float64),
+                'bm':        pv_bm_paths.astype(np.float64),
                 'costs':     pv_costs_paths.astype(np.float64),
             },
         )
@@ -1165,6 +1554,14 @@ class LSMCSolver:
         if max_workers is None:
             max_workers = max(1, min(N, (os.cpu_count() or 2) - 1))
         max_workers = max(1, min(max_workers, N))
+        if max_workers <= 1:
+            return self.forward(
+                bundle,
+                policy,
+                E_init_frac=E_init_frac,
+                SoH_init=SoH_init,
+                annual_cycles=annual_cycles,
+            )
 
         chunks = np.array_split(np.arange(N), max_workers)
         chunks = [chunk for chunk in chunks if len(chunk)]
@@ -1180,6 +1577,7 @@ class LSMCSolver:
                 lam=bundle.lam[idx],
                 delta_imb=bundle.delta_imb[idx],
                 pi={k: v[idx] for k, v in bundle.pi.items()},
+                pi_bm=bundle.pi_bm[idx],
                 dt=bundle.dt,
                 n_paths=len(idx),
                 n_steps=bundle.n_steps,
@@ -1229,7 +1627,7 @@ class LSMCSolver:
         soh_paths     = np.concatenate([r.soh_paths     for r in results], axis=0)
         action_paths  = np.concatenate([r.action_paths  for r in results], axis=0)
 
-        bd_keys = ['da', 'imbalance', 'dc', 'qr', 'costs']
+        bd_keys = ['da', 'imbalance', 'dc', 'qr', 'bm', 'costs']
         cf_breakdown = {
             k: np.concatenate([r.cf_breakdown[k] for r in results])
             for k in bd_keys
@@ -1252,8 +1650,10 @@ class LSMCSolver:
             merged_diag: Dict[str, object] = {
                 "total_decisions": total_decisions,
                 "selected_cashflow_mean_gbp": _wt_mean("selected_cashflow_mean_gbp"),
+                "selected_decision_cashflow_mean_gbp": _wt_mean("selected_decision_cashflow_mean_gbp"),
                 "selected_continuation_mean_gbp": _wt_mean("selected_continuation_mean_gbp"),
                 "selected_q_mean_gbp": _wt_mean("selected_q_mean_gbp"),
+                "imbalance_signal_lag_hh": int(self.imbalance_signal_lag_hh),
             }
             # Merge per-mode counts (each chunk has same mode ordering)
             if diag_list[0].get("by_mode"):
@@ -1282,10 +1682,10 @@ class LSMCSolver:
             soc_paths=soc_paths,
             soh_paths=soh_paths,
             action_paths=action_paths,
-            mtm_mean=float(np.mean(pv_paths)),
-            mtm_std=float(np.std(pv_paths)),
-            mtm_p5=float(np.percentile(pv_paths, 5)),
-            mtm_p95=float(np.percentile(pv_paths, 95)),
+            mtm_mean=float(np.mean(pv_paths))               if len(pv_paths) else float('nan'),
+            mtm_std=float(np.std(pv_paths))                 if len(pv_paths) else float('nan'),
+            mtm_p5=float(np.percentile(pv_paths,  5))       if len(pv_paths) else float('nan'),
+            mtm_p95=float(np.percentile(pv_paths, 95))      if len(pv_paths) else float('nan'),
             efc_total=efc_total,
             action_diagnostics=merged_diag,
             cf_breakdown=cf_breakdown,
