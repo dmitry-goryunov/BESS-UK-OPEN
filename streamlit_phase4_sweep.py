@@ -375,7 +375,7 @@ if section == "Phase 4: Duration Sweep":
 # ═══════════════════════════════════════════════════════════════════════════════
 # SECTION 2: Historical BESS Index vs Modo
 # ═══════════════════════════════════════════════════════════════════════════════
-else:
+elif section == "Historical Index vs Modo":
 
     # ── Load historical data ──────────────────────────────────────────────────
     m1, m2, bm1, bm2 = _m1, _m2, _bm1, _bm2
