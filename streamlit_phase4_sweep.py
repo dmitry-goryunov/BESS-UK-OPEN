@@ -1,9 +1,10 @@
 """
 BESS UK — Research Dashboard
 
-Two sections:
+Three sections:
 1. Phase 4 Duration Sweep  (notebook 13) — LSMC method comparison 1h–4h
 2. Historical BESS Index vs Modo (notebook 19) — calibrated backtest vs Modo Energy public index
+3. Forward vs Realized — nb13 LSMC/WD-rolling vs nb19 historical: price basis + optimality gap
 """
 
 from __future__ import annotations
@@ -73,10 +74,25 @@ def optional_image(name: str) -> bytes | None:
 st.sidebar.title("🔋 BESS UK Research")
 section = st.sidebar.radio(
     "Section",
-    options=["Phase 4: Duration Sweep", "Historical Index vs Modo"],
+    options=["Phase 4: Duration Sweep", "Historical Index vs Modo", "Forward vs Realized"],
     index=0,
 )
 st.sidebar.divider()
+
+# ── Load shared data once (used by sections 1, 2, 3) ─────────────────────────
+df_comparison  = optional_csv("phase4_all_durations_comparison.csv")
+df_attribution = optional_csv("phase4_all_durations_attribution.csv")
+
+_m1 = optional_csv("historical_index_1h_monthly.csv")
+_m2 = optional_csv("historical_index_2h_monthly.csv")
+_bm1 = optional_csv("bm_index_1h.csv")
+_bm2 = optional_csv("bm_index_2h.csv")
+for _df in (_m1, _m2):
+    if not _df.empty:
+        _df["period_dt"] = pd.to_datetime(_df["year_month"])
+for _df in (_bm1, _bm2):
+    if not _df.empty:
+        _df["period_dt"] = pd.to_datetime(_df["year_month"])
 
 # ═══════════════════════════════════════════════════════════════════════════════
 # SECTION 1: Phase 4 Duration Sweep
@@ -84,8 +100,6 @@ st.sidebar.divider()
 if section == "Phase 4: Duration Sweep":
 
     # ── Phase 4 data ────────────────────────────────────────────────────────
-    df_comparison = optional_csv("phase4_all_durations_comparison.csv")
-    df_attribution = optional_csv("phase4_all_durations_attribution.csv")
     img_comparison = optional_image("phase4_all_durations_comparison.png")
     img_attribution = optional_image("phase4_all_durations_attribution.png")
     run_log = optional_json("phase4_sweep_run_log.json")
@@ -364,18 +378,8 @@ if section == "Phase 4: Duration Sweep":
 else:
 
     # ── Load historical data ──────────────────────────────────────────────────
-    m1 = optional_csv("historical_index_1h_monthly.csv")
-    m2 = optional_csv("historical_index_2h_monthly.csv")
-    bm1 = optional_csv("bm_index_1h.csv")
-    bm2 = optional_csv("bm_index_2h.csv")
+    m1, m2, bm1, bm2 = _m1, _m2, _bm1, _bm2
     img_bm = optional_image("historical_index_with_bm.png")
-
-    for df in (m1, m2):
-        if not df.empty:
-            df["period_dt"] = pd.to_datetime(df["year_month"])
-    for df in (bm1, bm2):
-        if not df.empty:
-            df["period_dt"] = pd.to_datetime(df["year_month"])
 
     page = st.sidebar.radio(
         "View",
@@ -646,6 +650,355 @@ Rolling intrinsic LP **ignores all ancillary services** — they are computed se
 and added on top. Ancillary revenue is duration-agnostic in this model
 (1H and 2H earn identical ancillary revenue — a known simplification).
         """)
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# SECTION 3: Forward vs Realized
+# ═══════════════════════════════════════════════════════════════════════════════
+elif section == "Forward vs Realized":
+
+    m1, m2, bm1, bm2 = _m1, _m2, _bm1, _bm2
+
+    page = st.sidebar.radio(
+        "View",
+        options=["Overview", "Energy Trading", "Full Stack", "Gap Waterfall"],
+    )
+
+    st.title("Forward vs Realized: nb13 vs nb19")
+    st.markdown(
+        "**Three-way comparison:** "
+        "nb13 WD rolling (forward prices, rolling LP) · "
+        "nb19 Historical (actual 2024–26 prices, rolling LP) · "
+        "nb13 LSMC (forward prices, optimal dispatch). "
+        "Realized value sits between the two forward benchmarks."
+    )
+
+    # ── Helper: extract numbers from loaded CSVs ─────────────────────────────
+    def _nb13(method: str, dur: float, col: str = "gbp_per_mw_year_k") -> float:
+        if df_comparison.empty:
+            return 0.0
+        row = df_comparison[
+            (df_comparison["method"] == method) & (df_comparison["duration_h"] == dur)
+        ]
+        return float(row[col].iloc[0]) if not row.empty else 0.0
+
+    def _nb13_attr(key: str, dur: float) -> float:
+        """£k/MW/yr from attribution (mean_m × 10 for 100 MW asset)."""
+        if df_attribution.empty:
+            return 0.0
+        row = df_attribution[
+            (df_attribution["key"] == key) & (df_attribution["duration_h"] == dur)
+        ]
+        return float(row["mean_m"].iloc[0]) * 10.0 if not row.empty else 0.0
+
+    def _nb19_stream(m: pd.DataFrame, bm: pd.DataFrame, stream: str) -> float:
+        """Mean £k/MW/yr for a stream from historical monthly CSV."""
+        if m.empty:
+            return 0.0
+        if stream == "da_wd":
+            return (m["da_revenue_gbp_mw_yr"] + m["wd_revenue_gbp_mw_yr"]).mean() / 1000
+        if stream == "anc":
+            return m["anc_revenue_gbp_mw_yr"].mean() / 1000
+        if stream == "bm":
+            return bm["bm_rev_gbp_mw_yr"].mean() / 1000 if not bm.empty else 0.0
+        if stream == "total":
+            bm_val = bm["bm_rev_gbp_mw_yr"].mean() / 1000 if not bm.empty else 0.0
+            return m["total_net_gbp_mw_yr"].mean() / 1000 + bm_val
+        return 0.0
+
+    BLUE, ORANGE, GREEN = "#1565C0", "#E65100", "#2E7D32"
+
+    # ── Page: Overview ───────────────────────────────────────────────────────
+    if page == "Overview":
+        st.header("Overview: Three Valuations, One Battery")
+
+        st.info(
+            "**WD rolling** = forward simulation using rolling LP with intraday prices "
+            "(same algorithm as nb19 but fed simulated price paths anchored to current forwards). "
+            "**Historical** = same rolling LP algorithm on actual 2024–26 prices. "
+            "**LSMC** = non-anticipative optimal dispatch on simulated paths, full-stack."
+        )
+
+        for dur_label, dur, m_df, bm_df in [("1h", 1.0, m1, bm1), ("2h", 2.0, m2, bm2)]:
+            st.subheader(f"{dur_label.upper()} Battery")
+            c1, c2, c3, c4 = st.columns(4)
+            wd  = _nb13("WD rolling intrinsic", dur)
+            lsmc = _nb13("Forward simulation (LSMC)", dur)
+            hist = _nb19_stream(m_df, bm_df, "total")
+            da_wd = _nb19_stream(m_df, bm_df, "da_wd")
+
+            with c1:
+                st.metric("nb13 WD rolling", f"£{wd:.1f}k", "forward, energy-only")
+            with c2:
+                st.metric("nb19 Historical", f"£{hist:.1f}k", "realized, gross+BM")
+                st.caption(f"DA+WD only: £{da_wd:.1f}k")
+            with c3:
+                st.metric("nb13 LSMC", f"£{lsmc:.1f}k", "forward, full-stack")
+            with c4:
+                energy_gap = da_wd - wd
+                st.metric("Energy basis gap", f"£{energy_gap:+.1f}k",
+                          "actual > model spreads" if energy_gap > 0 else "model > actual")
+            if dur_label == "1h":
+                st.divider()
+
+        st.divider()
+        st.subheader("What Each Gap Means")
+        st.markdown("""
+| Gap | Size (1H) | Driver |
+|---|---|---|
+| nb13 WD rolling → nb19 DA+WD | +£4.8k | Actual 2024–26 imbalance spreads exceeded model forecast |
+| nb19 DA+WD → nb19 total | +£18.4k | Ancillary (£11.2k) + BM fleet (£7.2k) not in WD rolling |
+| nb19 total → nb13 LSMC | +£23.0k | Dispatch optimality premium (LSMC vs rolling LP) |
+| **nb13 WD → nb13 LSMC** | **+£46.2k** | **Full optimality gap: ancillary + optimal timing** |
+
+Realized value (£52.9k) sits between the two forward benchmarks:
+**WD rolling (£29.7k)** < **Realized (£52.9k)** < **LSMC optimal (£75.9k)**
+        """)
+
+    # ── Page: Energy Trading ─────────────────────────────────────────────────
+    elif page == "Energy Trading":
+        st.header("Energy Trading: WD Rolling (nb13) vs DA+WD Historical (nb19)")
+        st.markdown(
+            "Both use the **same rolling LP algorithm**. The only difference is the price signal: "
+            "nb13 feeds simulated paths anchored to current forwards; nb19 uses actual 2024–26 DA and SP prices."
+        )
+
+        # Bar comparison by duration
+        durations = [1.0, 2.0]
+        wd_vals = [_nb13("WD rolling intrinsic", d) for d in durations]
+        hist_wd_vals = [
+            _nb19_stream(m1, bm1, "da_wd"),
+            _nb19_stream(m2, bm2, "da_wd"),
+        ]
+
+        fig_bar = go.Figure()
+        fig_bar.add_trace(go.Bar(
+            name="nb13 WD rolling (forward prices)",
+            x=[f"{int(d)}h" for d in durations],
+            y=wd_vals,
+            marker_color=BLUE,
+            text=[f"£{v:.1f}k" for v in wd_vals],
+            textposition="outside",
+        ))
+        fig_bar.add_trace(go.Bar(
+            name="nb19 DA+WD (actual 2024–26)",
+            x=[f"{int(d)}h" for d in durations],
+            y=hist_wd_vals,
+            marker_color=ORANGE,
+            text=[f"£{v:.1f}k" for v in hist_wd_vals],
+            textposition="outside",
+        ))
+        fig_bar.update_layout(
+            barmode="group",
+            title="Energy trading value: forward simulation vs actual realization",
+            yaxis_title="£k / MW / yr",
+            height=420,
+            legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
+        )
+        st.plotly_chart(fig_bar, use_container_width=True)
+
+        gaps = [h - w for h, w in zip(hist_wd_vals, wd_vals)]
+        st.success(
+            f"Gap: 1H = £{gaps[0]:+.1f}k  |  2H = £{gaps[1]:+.1f}k  — "
+            "actual 2024–26 imbalance spreads were higher than the calibrated model predicts. "
+            "This is model basis risk, not execution alpha."
+        )
+
+        st.divider()
+
+        # Monthly time series
+        dur_sel = st.radio("Duration for monthly view", ["1h", "2h"], horizontal=True)
+        m_df = m1 if dur_sel == "1h" else m2
+        bm_df = bm1 if dur_sel == "1h" else bm2
+        dur_h = 1.0 if dur_sel == "1h" else 2.0
+        wd_ref = _nb13("WD rolling intrinsic", dur_h)
+
+        if not m_df.empty:
+            monthly_da_wd = (m_df["da_revenue_gbp_mw_yr"] + m_df["wd_revenue_gbp_mw_yr"]) / 1000
+
+            fig_ts = go.Figure()
+            fig_ts.add_trace(go.Scatter(
+                x=m_df["period_dt"], y=monthly_da_wd,
+                mode="lines+markers", name=f"nb19 DA+WD monthly (actual)",
+                marker_color=ORANGE, line_width=2,
+                hovertemplate="%{x|%b %Y}: £%{y:.1f}k<extra></extra>",
+            ))
+            fig_ts.add_hline(
+                y=wd_ref, line_dash="dot", line_color=BLUE,
+                annotation_text=f"nb13 WD rolling avg £{wd_ref:.1f}k",
+                annotation_position="top left",
+            )
+            fig_ts.add_hline(
+                y=monthly_da_wd.mean(), line_dash="dash", line_color=ORANGE,
+                annotation_text=f"nb19 avg £{monthly_da_wd.mean():.1f}k",
+                annotation_position="top right",
+            )
+            fig_ts.update_layout(
+                title=f"Monthly DA+WD revenue ({dur_sel.upper()}) vs forward model reference",
+                xaxis_title="Month", yaxis_title="£k / MW / yr (annualised)",
+                height=420,
+            )
+            st.plotly_chart(fig_ts, use_container_width=True)
+            st.caption(
+                "The nb13 forward model gives a single expected value (dotted line). "
+                "Monthly actual performance varies around it — months with high imbalance events "
+                "drive the realized average above the model."
+            )
+
+    # ── Page: Full Stack ─────────────────────────────────────────────────────
+    elif page == "Full Stack":
+        st.header("Full Stack: Three-Way Comparison")
+        st.markdown(
+            "Comparing all revenue components across the three valuation perspectives. "
+            "nb13 LSMC is the **optimal** benchmark; nb19 is **realized**; nb13 WD rolling is the **naive forward**."
+        )
+
+        dur_sel = st.radio("Duration", ["1h", "2h"], horizontal=True)
+        dur_h = 1.0 if dur_sel == "1h" else 2.0
+        m_df = m1 if dur_sel == "1h" else m2
+        bm_df = bm1 if dur_sel == "1h" else bm2
+
+        wd = _nb13("WD rolling intrinsic", dur_h)
+        lsmc = _nb13("Forward simulation (LSMC)", dur_h)
+        lsmc_costs = abs(_nb13_attr("costs", dur_h))
+        lsmc_anc = _nb13_attr("dc", dur_h) + _nb13_attr("qr", dur_h)
+        lsmc_energy = lsmc + lsmc_costs - lsmc_anc
+
+        hist_da_wd = _nb19_stream(m_df, bm_df, "da_wd")
+        hist_anc = _nb19_stream(m_df, bm_df, "anc")
+        hist_bm = _nb19_stream(m_df, bm_df, "bm")
+        hist_total = _nb19_stream(m_df, bm_df, "total")
+
+        categories = ["Energy (DA+WD)", "Ancillary (DC+QR)", "BM fleet", "Costs (−)"]
+        val_wd = [wd, 0.0, 0.0, 0.0]
+        val_hist = [hist_da_wd, hist_anc, hist_bm, 0.0]
+        val_lsmc = [lsmc_energy, lsmc_anc, 0.0, -lsmc_costs]
+
+        col1, col2, col3 = st.columns(3)
+        with col1:
+            st.metric("nb13 WD rolling", f"£{wd:.1f}k", "energy-only")
+        with col2:
+            st.metric("nb19 Historical", f"£{hist_total:.1f}k", "DA+WD+Anc+BM gross")
+        with col3:
+            st.metric("nb13 LSMC", f"£{lsmc:.1f}k", "full-stack net")
+
+        fig = go.Figure()
+        colors = ["#42A5F5", "#66BB6A", "#FFA726", "#EF5350"]
+        for i, (cat, c) in enumerate(zip(categories, colors)):
+            fig.add_trace(go.Bar(
+                name=cat,
+                x=["nb13 WD rolling", "nb19 Historical", "nb13 LSMC"],
+                y=[val_wd[i], val_hist[i], val_lsmc[i]],
+                marker_color=c,
+                hovertemplate=f"{cat}: £%{{y:.1f}}k<extra></extra>",
+            ))
+
+        fig.update_layout(
+            barmode="relative",
+            title=f"Revenue stack comparison — {dur_sel.upper()} battery (£k/MW/yr)",
+            yaxis_title="£k / MW / yr",
+            height=480,
+            legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
+        )
+        st.plotly_chart(fig, use_container_width=True)
+
+        st.divider()
+        st.subheader("Summary Table")
+        summary = pd.DataFrame({
+            "Component": ["Energy (DA+WD)", "Ancillary (DC+QR)", "BM fleet", "Costs (VOM+deg)", "Total"],
+            "nb13 WD rolling": [f"£{wd:.1f}k", "—", "—", "VOM=0", f"£{wd:.1f}k"],
+            "nb19 Historical": [f"£{hist_da_wd:.1f}k", f"£{hist_anc:.1f}k", f"£{hist_bm:.1f}k", "excl.", f"£{hist_total:.1f}k"],
+            "nb13 LSMC": [f"£{lsmc_energy:.1f}k", f"£{lsmc_anc:.1f}k", "—", f"−£{lsmc_costs:.1f}k", f"£{lsmc:.1f}k"],
+        })
+        st.dataframe(summary, use_container_width=True, hide_index=True)
+
+        st.caption(
+            "nb13 LSMC 'Energy' = WD/intraday + HPFC + DA surprise components net of ancillary. "
+            "BM not modelled in nb13. Costs excluded from nb19 for gross comparison."
+        )
+
+    # ── Page: Gap Waterfall ──────────────────────────────────────────────────
+    elif page == "Gap Waterfall":
+        st.header("Gap Waterfall: From Forward to Realized")
+
+        dur_sel = st.radio("Duration", ["1h", "2h"], horizontal=True)
+        dur_h = 1.0 if dur_sel == "1h" else 2.0
+        m_df = m1 if dur_sel == "1h" else m2
+        bm_df = bm1 if dur_sel == "1h" else bm2
+
+        wd = _nb13("WD rolling intrinsic", dur_h)
+        lsmc = _nb13("Forward simulation (LSMC)", dur_h)
+        da_wd = _nb19_stream(m_df, bm_df, "da_wd")
+        anc   = _nb19_stream(m_df, bm_df, "anc")
+        bm    = _nb19_stream(m_df, bm_df, "bm")
+        hist  = _nb19_stream(m_df, bm_df, "total")
+
+        price_basis = da_wd - wd
+        optimality  = lsmc - hist
+
+        st.subheader("From nb13 WD rolling → nb19 Realized → nb13 LSMC")
+
+        fig_wf = go.Figure(go.Waterfall(
+            orientation="v",
+            measure=["absolute", "relative", "relative", "relative", "total",
+                     "relative", "total"],
+            x=[
+                "nb13 WD rolling\n(forward, energy)",
+                "Ancillary\n(nb19 actual)",
+                "Price basis\n(actual > model)",
+                "BM fleet\n(not in model)",
+                "nb19 Realized\n(total)",
+                "Dispatch\noptimality\n(LSMC vs LP)",
+                "nb13 LSMC\n(forward, optimal)",
+            ],
+            y=[wd, anc, price_basis, bm, 0, optimality, 0],
+            connector={"line": {"color": "rgb(63, 63, 63)"}},
+            increasing={"marker": {"color": GREEN}},
+            decreasing={"marker": {"color": "#EF5350"}},
+            totals={"marker": {"color": ORANGE}},
+            text=[
+                f"£{wd:.1f}k",
+                f"+£{anc:.1f}k",
+                f"+£{price_basis:.1f}k",
+                f"+£{bm:.1f}k",
+                f"£{hist:.1f}k",
+                f"+£{optimality:.1f}k",
+                f"£{lsmc:.1f}k",
+            ],
+            textposition="outside",
+        ))
+        fig_wf.update_layout(
+            title=f"Gap decomposition — {dur_sel.upper()} battery (£k/MW/yr, gross)",
+            yaxis_title="£k / MW / yr",
+            height=520,
+            showlegend=False,
+        )
+        st.plotly_chart(fig_wf, use_container_width=True)
+
+        st.divider()
+        col1, col2 = st.columns(2)
+        with col1:
+            st.subheader("Price basis gap")
+            st.metric("Actual DA+WD", f"£{da_wd:.1f}k")
+            st.metric("nb13 WD rolling", f"£{wd:.1f}k")
+            st.metric("Gap", f"£{price_basis:+.1f}k",
+                      "actual 2024–26 spreads > model")
+            st.markdown(
+                "Driven by higher-than-modelled SP−DA imbalance in 2024–26. "
+                "This is **model basis risk** — the imbalance OU+jump calibration "
+                "underestimates realized spread volatility."
+            )
+        with col2:
+            st.subheader("Optimality gap")
+            st.metric("nb13 LSMC (optimal)", f"£{lsmc:.1f}k")
+            st.metric("nb19 Realized", f"£{hist:.1f}k")
+            st.metric("Gap", f"£{optimality:+.1f}k",
+                      "LSMC dispatch > rolling LP")
+            st.markdown(
+                "LSMC finds the optimal non-anticipative policy by valuing continuation. "
+                "Rolling LP is myopic (re-plans every gate). "
+                "This **execution alpha** is the theoretical upper bound on operator skill."
+            )
 
 
 # ── Footer ────────────────────────────────────────────────────────────────────
