@@ -640,3 +640,35 @@ The table uses 125 debug-mode Monte Carlo paths (1 080 half-hour horizon) and is
 suitable for comparing relative method ranking across durations. The absolute
 £k/MW/yr levels are calibrated-debug numbers and should be compared against the
 full 500-path medium run (4 320 HH) before using as bankable figures.
+
+---
+
+## Streamlit dashboard
+
+**Entry point**: `streamlit_phase4_sweep.py`
+
+The app has three top-level sections (sidebar radio):
+
+| Section | Content |
+|---|---|
+| **Phase 4: Duration Sweep** | Method comparison charts and tables across 1–4h durations; LSMC attribution; individual duration detail |
+| **Historical Index vs Modo** | Realised BESS index vs MODO Energy published benchmark |
+| **Forward vs Realized** | Forward model (LSMC) vs realised backtests; attribution side-by-side |
+
+### WD vs LSMC Attribution table
+
+**Navigation**: Sidebar → **Forward vs Realized** → sub-page **WD vs LSMC Attribution**
+
+Shows a row-per-bucket breakdown of value sources for WD rolling, MODO style, and LSMC side by side:
+
+| Bucket | WD rolling | MODO style | LSMC |
+|---|---|---|---|
+| DA energy | DA rolling intrinsic | same LP (identical) | `hpfc + da_surp` |
+| WD / Imbalance | `WD total − DA rolling` (cap £10) | `MODO total − DA rolling` (cap £60) | `imbalance` |
+| DC ancillary | — | — | `dc` |
+| QR ancillary | — | — | `qr` |
+| Costs | — (gross) | — (gross) | `costs` |
+
+Values are in £k/MW/yr. The duration selector (1h / 2h / 3h / 4h) updates all three columns live.
+
+The equivalent interactive version with charts is **notebook 13**, section 6 (cell `7e27312a`).
