@@ -1006,6 +1006,17 @@ Realized value (£52.9k) sits between the two forward benchmarks:
     elif page == "WD vs LSMC Attribution":
         st.header("WD vs LSMC Attribution — Side by Side")
 
+        st.markdown("""
+| Bucket | WD rolling source | LSMC source |
+|---|---|---|
+| DA energy | DA rolling intrinsic value | `HPFC anchor + DA surprise` from `cf_breakdown` |
+| WD / Imbalance | `WD total − DA rolling` (residual) | `Imbalance proxy` from `cf_breakdown` |
+| DC ancillary | — (not modelled) | `DC ancillary` from `cf_breakdown` |
+| QR ancillary | — (not modelled) | `QR ancillary` from `cf_breakdown` |
+| Costs | — (WD LP has no deg/VOM) | `Costs (deg+VOM)` from `cf_breakdown` |
+        """)
+
+        st.divider()
         dur_sel = st.radio("Duration", ["1h", "2h", "3h", "4h"], horizontal=True)
         dur_h = float(dur_sel[0])
 
