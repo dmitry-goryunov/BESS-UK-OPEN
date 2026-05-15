@@ -1007,13 +1007,13 @@ Realized value (£52.9k) sits between the two forward benchmarks:
         st.header("WD vs LSMC Attribution — Side by Side")
 
         st.markdown("""
-| Bucket | WD rolling source | LSMC source |
-|---|---|---|
-| DA energy | DA rolling intrinsic value | `HPFC anchor + DA surprise` from `cf_breakdown` |
-| WD / Imbalance | `WD total − DA rolling` (residual) | `Imbalance proxy` from `cf_breakdown` |
-| DC ancillary | — (not modelled) | `DC ancillary` from `cf_breakdown` |
-| QR ancillary | — (not modelled) | `QR ancillary` from `cf_breakdown` |
-| Costs | — (WD LP has no deg/VOM) | `Costs (deg+VOM)` from `cf_breakdown` |
+| Bucket | WD rolling source | MODO style source | LSMC source |
+|---|---|---|---|
+| DA energy | DA rolling intrinsic value | DA rolling intrinsic value (same LP) | `HPFC anchor + DA surprise` from `cf_breakdown` |
+| WD / Imbalance | `WD total − DA rolling` (residual, cap £10) | `MODO total − DA rolling` (residual, cap £60) | `Imbalance proxy` from `cf_breakdown` |
+| DC ancillary | — (not modelled) | — (not modelled) | `DC ancillary` from `cf_breakdown` |
+| QR ancillary | — (not modelled) | — (not modelled) | `QR ancillary` from `cf_breakdown` |
+| Costs | — (WD LP has no deg/VOM) | — (gross basis) | `Costs (deg+VOM)` from `cf_breakdown` |
         """)
 
         st.divider()
@@ -1022,6 +1022,7 @@ Realized value (£52.9k) sits between the two forward benchmarks:
 
         wd_total   = _nb13("WD rolling intrinsic", dur_h)
         da_rolling = _nb13("DA rolling intrinsic", dur_h)
+        modo_total = _nb13("MODO style forward look", dur_h)
         lsmc_total = _nb13("Forward simulation (LSMC)", dur_h)
 
         lsmc_hpfc    = _nb13_attr("hpfc", dur_h)
@@ -1037,46 +1038,54 @@ Realized value (£52.9k) sits between the two forward benchmarks:
 
         rows = [
             {
-                "Bucket":      "DA energy",
+                "Bucket":           "DA energy",
                 "What it measures": "Spot energy arbitrage — charge overnight trough, sell morning peak. Deterministic LP on DA forward prices; duration scales with stored MWh.",
-                "WD rolling":  _fv(da_rolling),
-                "LSMC":        _fv(lsmc_hpfc + lsmc_da_surp),
+                "WD rolling":       _fv(da_rolling),
+                "MODO style":       _fv(da_rolling),
+                "LSMC":             _fv(lsmc_hpfc + lsmc_da_surp),
             },
             {
-                "Bucket":      "WD / Imbalance",
-                "What it measures": "Within-day price moves and system imbalance basis (SP − DA). WD rolling uses actual gate prices as an oracle; LSMC acts on simulated paths non-anticipatively.",
-                "WD rolling":  _fv(wd_total - da_rolling),
-                "LSMC":        _fv(lsmc_imb),
+                "Bucket":           "WD / Imbalance",
+                "What it measures": "Within-day price moves and system imbalance basis (SP − DA). WD uses £10/MWh cap; MODO uses £60/MWh cap; LSMC acts on simulated paths non-anticipatively.",
+                "WD rolling":       _fv(wd_total - da_rolling),
+                "MODO style":       _fv(modo_total - da_rolling),
+                "LSMC":             _fv(lsmc_imb),
             },
             {
-                "Bucket":      "DC ancillary",
+                "Bucket":           "DC ancillary",
                 "What it measures": "Dynamic Containment: hold power headroom/footroom available to the SO. Revenue = clearing price × committed MW × hours. Not modelled in rolling LP.",
-                "WD rolling":  "—",
-                "LSMC":        _fv(lsmc_dc),
+                "WD rolling":       "—",
+                "MODO style":       "—",
+                "LSMC":             _fv(lsmc_dc),
             },
             {
-                "Bucket":      "QR ancillary",
+                "Bucket":           "QR ancillary",
                 "What it measures": "Quick Reserve: fast-response balancing availability. Similar structure to DC but separate product, different price and commitment horizon.",
-                "WD rolling":  "—",
-                "LSMC":        _fv(lsmc_qr),
+                "WD rolling":       "—",
+                "MODO style":       "—",
+                "LSMC":             _fv(lsmc_qr),
             },
             {
-                "Bucket":      "Costs",
-                "What it measures": "Degradation shadow cost + variable O&M on throughput (£/MWh cycled). WD rolling is gross (no costs); LSMC deducts these to give a net value.",
-                "WD rolling":  "— (gross)",
-                "LSMC":        _fv(lsmc_costs),
+                "Bucket":           "Costs",
+                "What it measures": "Degradation shadow cost + variable O&M on throughput (£/MWh cycled). WD and MODO rolling are gross (no costs); LSMC deducts these to give a net value.",
+                "WD rolling":       "— (gross)",
+                "MODO style":       "— (gross)",
+                "LSMC":             _fv(lsmc_costs),
             },
             {
-                "Bucket":      "Total",
+                "Bucket":           "Total",
                 "What it measures": "",
-                "WD rolling":  f"£{wd_total:.1f}k",
-                "LSMC":        f"£{lsmc_total:.1f}k",
+                "WD rolling":       f"£{wd_total:.1f}k",
+                "MODO style":       f"£{modo_total:.1f}k",
+                "LSMC":             f"£{lsmc_total:.1f}k",
             },
         ]
         st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True)
 
         st.caption(
-            "£k/MW/yr. WD rolling total and DA component from nb13 comparison CSV; "
+            "£k/MW/yr. WD rolling / MODO style totals and DA component from nb13 comparison CSV. "
+            "MODO style = WD rolling LP re-run with £60/MWh uplift cap vs £10/MWh base; "
+            "the extra WD/Imbalance value is the intraday spread captured by the wider cap. "
             "LSMC buckets from per-path attribution mean (hpfc + da_surp = DA energy). "
             "LSMC DA energy is often slightly negative: cycles that WD rolling uses for DA "
             "arbitrage are redeployed to higher-value imbalance/ancillary dispatch."
