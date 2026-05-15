@@ -52,6 +52,72 @@ the full day rather than rolling 24h windows.
 Records, for the joint-optimal policy, how much cash came from each source:
 
 ```
+da        = P_da × net_mw × dt          (can be negative — see below)
+imbalance = Δ_imb × d_mw × dt
+dc        = π_DC × r_dc_mw × dt
+qr        = π_QR × r_qr_mw × dt
+costs     = (λ_deg + VoM) × throughput
+```
+
+Useful for: "where did the cash actually come from?"
+**Not** suitable for measuring the marginal value of each revenue stream.
+
+### 2. Marginal (counterfactual) value
+
+Zero out one stream at a time, re-run the full LSMC, diff the totals:
+
+```
+V_DA_marginal  = V_LSMC(full) − V_LSMC(Δ_imb=0, π_DC=0, π_QR=0)
+V_imbalance    = V_LSMC(full) − V_LSMC(Δ_imb=0)
+V_ancillary    = V_LSMC(full) − V_LSMC(π_DC=0, π_QR=0)
+```
+
+Useful for: "what is each revenue stream worth to this asset?"
+Expensive: requires a full backward + forward pass per counterfactual.
+
+---
+
+## Value bucket comparison: WD rolling vs LSMC
+
+Each method decomposes into the same five buckets, but sourced differently.
+
+| Bucket | What it measures | WD rolling source | LSMC source |
+|---|---|---|---|
+| **DA energy** | Spot energy arbitrage — charge overnight trough, sell morning/evening peak. Scales with stored MWh. | DA rolling intrinsic value (full capacity available) | `HPFC anchor + DA surprise` from `cf_breakdown` (often slightly negative — see below) |
+| **WD / Imbalance** | Within-day price moves and system imbalance basis (SP − DA). MW-based: does not scale with duration. | `WD total − DA rolling` (residual) | `Imbalance proxy` from `cf_breakdown` |
+| **DC ancillary** | Dynamic Containment: hold power headroom/footroom for the SO. Revenue = clearing price × committed MW × hours. | — (not modelled) | `DC ancillary` from `cf_breakdown` |
+| **QR ancillary** | Quick Reserve: fast-response balancing availability. Separate product from DC; different price and commitment. | — (not modelled) | `QR ancillary` from `cf_breakdown` |
+| **Costs** | Degradation shadow cost + variable O&M on throughput. | — (WD rolling LP is gross; no deg/VOM) | `Costs (deg+VOM)` from `cf_breakdown` (negative) |
+
+### Why LSMC DA energy is often negative
+
+When the policy co-optimises all sources, power committed to DC/QR reserve is not available
+for net dispatch. Charge/discharge timing is driven by the imbalance and ancillary signals
+rather than the DA intraday peak/trough. Efficiency losses (88% RTE) then outweigh the
+incidental DA spread captured:
+
+```
+Rational trade-off: +£68k imbalance + £15k ancillary − £4k DA drag = £72k total
+vs the DA-only alternative:                                            £34k DA only
+```
+
+The gap between V_RI (~£34k) and the LSMC DA component (~−£4k) is the **capacity
+opportunity cost** — cycles that WD rolling uses for DA arbitrage are redeployed to
+higher-value imbalance and ancillary dispatch.
+
+### Ordering across methods (£k/MW/yr, 125-path fast run)
+
+| Method | 1h | 2h | 3h | 4h |
+|---|---:|---:|---:|---:|
+| Initial hourly intrinsic | 9.7 | 18.6 | 26.0 | 31.7 |
+| DA rolling intrinsic | 16.3 | 31.0 | 43.3 | 53.1 |
+| WD rolling intrinsic | 26.7 | 44.7 | 57.8 | 67.5 |
+| Forward simulation (LSMC) | 19.1 | 40.5 | 53.0 | 57.6 |
+| Perfect foresight (DA energy) | 15.6 | 29.7 | 41.3 | 50.4 |
+
+Note: WD rolling > LSMC because WD uses an oracle (actual gate prices); LSMC is
+non-anticipative. LSMC closes the gap versus WD rolling at longer durations where
+the larger energy reservoir reduces the timing urgency.
 
 ---
 
@@ -211,29 +277,6 @@ Updated base LSMC annualised values:
 | 2h | 8.172 |
 | 3h | 8.669 |
 | 4h | 8.951 |
-da        = P_da × net_mw × dt          (can be negative — see below)
-imbalance = Δ_imb × d_mw × dt
-dc        = π_DC × r_dc_mw × dt
-qr        = π_QR × r_qr_mw × dt
-costs     = (λ_deg + VoM) × throughput
-```
-
-Useful for: "where did the cash actually come from?"
-**Not** suitable for measuring the marginal value of each revenue stream.
-
-### 2. Marginal (counterfactual) value
-
-Zero out one stream at a time, re-run the full LSMC, diff the totals:
-
-```
-V_DA_marginal  = V_LSMC(full) − V_LSMC(Δ_imb=0, π_DC=0, π_QR=0)
-V_imbalance    = V_LSMC(full) − V_LSMC(Δ_imb=0)
-V_ancillary    = V_LSMC(full) − V_LSMC(π_DC=0, π_QR=0)
-```
-
-Useful for: "what is each revenue stream worth to this asset?"
-Expensive: requires a full backward + forward pass per counterfactual.
-
 ---
 
 ## Why the LSMC DA component ≠ V_RI
@@ -558,7 +601,14 @@ foresight on total value even though it does not know future prices.
 Re-runs WD rolling intrinsic with the intraday price signal capped at ±£60/MWh.
 MODO Energy's published valuations are understood to use a similar cap to limit
 exposure to extreme intraday spikes. Comparing MODO style to the base WD rolling
-(cap ≈ £10/MWh) shows how much WD value depends on uncapped spike events.
+shows how much WD value depends on uncapped spike events.
+
+**Data quality note (2026-05-15):** the current nb13 MODO style values
+(£70.8k/£98.8k/£115k/£126k for 1h–4h) are 2–3× above uncapped WD rolling
+(£26.7k/£44.7k/£57.8k/£67.5k), which is physically impossible for a capped
+variant. The nb13 MODO implementation likely applies a different look-ahead
+window or price transformation than intended. These values should be treated as
+unreliable until the nb13 MODO cell is debugged and rerun.
 
 ### How to read the P5–P95 range
 
