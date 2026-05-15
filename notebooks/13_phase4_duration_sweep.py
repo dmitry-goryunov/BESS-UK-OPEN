@@ -90,6 +90,10 @@ def _tail_text(path: Path, max_chars: int = 3000) -> str:
     if not path.exists():
         return ''
     text = path.read_text(encoding='utf-8', errors='replace')
+    # Strip replacement chars and ANSI escape sequences so cp1252 console can print
+    text = text.replace('�', '?')
+    import re as _re
+    text = _re.sub(r'\x1b\[[0-9;]*m', '', text)
     return text[-max_chars:]
 
 def _read_status_events(path: Path) -> list[dict]:

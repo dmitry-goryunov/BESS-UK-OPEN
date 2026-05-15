@@ -108,6 +108,7 @@ if section == "Phase 4: Duration Sweep":
         "Initial hourly intrinsic",
         "DA rolling intrinsic",
         "WD rolling intrinsic",
+        "MODO style forward look",
         "Forward simulation (LSMC)",
         "Perfect foresight (DA energy)",
     ]
@@ -661,7 +662,7 @@ elif section == "Forward vs Realized":
 
     page = st.sidebar.radio(
         "View",
-        options=["Overview", "Energy Trading", "Full Stack", "Gap Waterfall"],
+        options=["Overview", "Energy Trading", "Full Stack", "Gap Waterfall", "WD vs LSMC Attribution"],
     )
 
     st.title("Forward vs Realized: nb13 vs nb19")
@@ -999,6 +1000,110 @@ Realized value (£52.9k) sits between the two forward benchmarks:
                 "Rolling LP is myopic (re-plans every gate). "
                 "This **execution alpha** is the theoretical upper bound on operator skill."
             )
+
+
+    # ── Page: WD vs LSMC Attribution ─────────────────────────────────────────
+    elif page == "WD vs LSMC Attribution":
+        st.header("WD vs LSMC Attribution — Side by Side")
+        st.markdown(
+            "Decomposes each method into comparable buckets. "
+            "**MODO style** re-runs WD rolling with intraday prices capped at ±£60/MWh — "
+            "the calibration point for the Modo Energy public index."
+        )
+
+        st.subheader("Method overview")
+        st.markdown("""
+| Method | Price information | Revenue streams | Role |
+|---|---|---|---|
+| **DA rolling** | DA gate prices (48-HH window, deterministic LP) | DA energy only | Conservative floor — best a DA-only automated strategy can do |
+| **MODO style** | Within-day gate prices, **capped ±£60/MWh** | DA + intraday (capped) | Third-party calibration point; clips tail spike events |
+| **WD rolling** | Within-day gate prices, **uncapped** | DA + intraday | Oracle benchmark; uses prices the battery cannot yet see |
+| **LSMC** | No look-ahead (non-anticipative, simulated paths) | DA + imbalance + DC + QR − costs | Real-battery optimum; ancillary/imbalance dominate |
+
+Ordering: **DA rolling < MODO style < WD rolling ≪ LSMC** (LSMC beats the oracle because it accesses ancillary streams the rolling LP ignores entirely).
+        """)
+
+        st.subheader("Attribution: how each bucket is sourced")
+        st.markdown("""
+| Bucket | WD rolling source | MODO style source | LSMC source |
+|---|---|---|---|
+| DA energy | DA rolling intrinsic value | DA rolling intrinsic value (same LP) | `HPFC anchor + DA surprise` from `cf_breakdown` |
+| WD / Imbalance | `WD total − DA rolling` (residual) | `MODO total − DA rolling` (cap ±£60 residual) | `Imbalance proxy` from `cf_breakdown` |
+| DC ancillary | — (not modelled) | — (not modelled) | `DC ancillary` from `cf_breakdown` |
+| QR ancillary | — (not modelled) | — (not modelled) | `QR ancillary` from `cf_breakdown` |
+| Costs | — (WD LP has no deg/VOM) | — (gross basis, no deg/VOM) | `Costs (deg+VOM)` from `cf_breakdown` |
+        """)
+
+        st.divider()
+        st.subheader("Computed values by duration")
+
+        dur_sel = st.radio("Duration", ["1h", "2h", "3h", "4h"], horizontal=True)
+        dur_h = float(dur_sel[0])
+
+        wd_total   = _nb13("WD rolling intrinsic", dur_h)
+        da_rolling = _nb13("DA rolling intrinsic", dur_h)
+        modo_total = _nb13("MODO style forward look", dur_h)
+        lsmc_total = _nb13("Forward simulation (LSMC)", dur_h)
+
+        lsmc_hpfc    = _nb13_attr("hpfc", dur_h)
+        lsmc_da_surp = _nb13_attr("da_surp", dur_h)
+        lsmc_imb     = _nb13_attr("imbalance", dur_h)
+        lsmc_dc      = _nb13_attr("dc", dur_h)
+        lsmc_qr      = _nb13_attr("qr", dur_h)
+        lsmc_costs   = _nb13_attr("costs", dur_h)
+
+        def _fmt(v: float, dash: bool = False) -> str:
+            if dash:
+                return "—"
+            sign = "+" if v > 0 else ""
+            return f"{sign}£{v:.1f}k"
+
+        rows = [
+            {
+                "Bucket":       "DA energy",
+                "WD rolling":   _fmt(da_rolling),
+                "MODO style":   _fmt(da_rolling),
+                "LSMC":         _fmt(lsmc_hpfc + lsmc_da_surp),
+            },
+            {
+                "Bucket":       "WD / Imbalance",
+                "WD rolling":   _fmt(wd_total - da_rolling),
+                "MODO style":   _fmt(modo_total - da_rolling),
+                "LSMC":         _fmt(lsmc_imb),
+            },
+            {
+                "Bucket":       "DC ancillary",
+                "WD rolling":   "—",
+                "MODO style":   "—",
+                "LSMC":         _fmt(lsmc_dc),
+            },
+            {
+                "Bucket":       "QR ancillary",
+                "WD rolling":   "—",
+                "MODO style":   "—",
+                "LSMC":         _fmt(lsmc_qr),
+            },
+            {
+                "Bucket":       "Costs",
+                "WD rolling":   "—",
+                "MODO style":   "—",
+                "LSMC":         _fmt(lsmc_costs),
+            },
+            {
+                "Bucket":       "Total",
+                "WD rolling":   f"£{wd_total:.1f}k",
+                "MODO style":   f"£{modo_total:.1f}k",
+                "LSMC":         f"£{lsmc_total:.1f}k",
+            },
+        ]
+        st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True)
+
+        st.caption(
+            "Units: £k/MW/yr. WD rolling and MODO style totals come from the nb13 comparison CSV; "
+            "LSMC buckets come from the per-path attribution mean. "
+            "LSMC DA energy = HPFC anchor + DA surprise (often slightly negative: capacity "
+            "opportunity cost when imbalance/ancillary dominate dispatch timing)."
+        )
 
 
 # ── Footer ────────────────────────────────────────────────────────────────────

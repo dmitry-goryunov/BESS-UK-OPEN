@@ -79,13 +79,17 @@ PHASE4_RUNS = {
         'bwd_steps': 4320,
         'fwd_paths': 500,
         'fwd_workers': 2,          # 2 threads keeps CPU cooler during forward pass
-        'ridge_alpha': 200.0,
+        # ridge_alpha=1.0: mild regularisation (shrinkage ~0.2% with N=500).
+        # Previous value of 200 over-shrunk slope features, preventing the
+        # continuation value from learning intertemporal DA spread signals, and
+        # causing the LSMC to behave greedily (7% DA energy capture vs DA RI).
+        'ridge_alpha': 1.0,
         # Use the production cap; low caps clip long-duration continuation values.
         'continuation_value_cap_gbp': float(LSMC_CFG.get('continuation_value_cap_gbp', 25_000_000)),
-        # SoC grid scaling: 3 nodes/hour (min 9).
-        # Gives 1h:9, 2h:9, 3h:9, 4h:12 — constant grid spacing for 1-3h,
-        # modest increase for 4h only.  Keeps per-duration runtime roughly equal.
-        'n_soc_nodes_per_hour': 3,
+        # SoC grid scaling: 5 nodes/hour (min 9).
+        # Gives 1h:9, 2h:10, 3h:15, 4h:20 — finer grid for longer durations
+        # where the SoC range (MWh) is wider and interpolation errors are larger.
+        'n_soc_nodes_per_hour': 5,
         'soh_nodes': [1.00, 0.90, 0.82],
         'net_levels': [-1.0, -0.5, 0.0, 0.5, 1.0],
         'dc_levels': [0.0, 0.5],
@@ -101,6 +105,11 @@ for _k, _e in [('bwd_paths', 'NB12_BWD_PATHS'), ('ri_paths', 'NB12_RI_PATHS'),
     _v = os.environ.get(_e, '')
     if _v:
         PHASE4_RUN[_k] = int(_v)
+# Float overrides
+for _k, _e in [('ridge_alpha', 'NB12_RIDGE_ALPHA')]:
+    _v = os.environ.get(_e, '')
+    if _v:
+        PHASE4_RUN[_k] = float(_v)
 
 print(f'Project root: {PROJECT_ROOT}')
 print(f'Run mode: {PHASE4_RUN_MODE_FOR_SWEEP}')
@@ -351,7 +360,7 @@ bundle_bwd = PathBundle(
 )
 solver = LSMCSolver(
     ASSET_VAL, LSMC_FAST_CFG, DEGRADATION, FINANCE,
-    modes=FAST_MODES, verbose=True,
+    modes=FAST_MODES, verbose=False,
     hpfc_params=hpfc_p,
     hpfc_curve=hpfc_half_hour_anchor,
 )
