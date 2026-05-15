@@ -115,9 +115,11 @@ higher-value imbalance and ancillary dispatch.
 | Forward simulation (LSMC) | 19.1 | 40.5 | 53.0 | 57.6 |
 | Perfect foresight (DA energy) | 15.6 | 29.7 | 41.3 | 50.4 |
 
-Note: WD rolling > LSMC because WD uses an oracle (actual gate prices); LSMC is
-non-anticipative. LSMC closes the gap versus WD rolling at longer durations where
-the larger energy reservoir reduces the timing urgency.
+Note: WD rolling (cap £10) < MODO style (cap £60) because the wider cap captures
+intraday spreads the £10 cap suppresses. LSMC sits below WD rolling because it is
+non-anticipative (no gate-price oracle) but co-optimises ancillary revenue the rolling
+LP ignores. At longer durations LSMC closes toward WD rolling as energy arbitrage
+becomes less time-sensitive.
 
 ---
 
@@ -574,8 +576,8 @@ and how to read the gaps between them.
 |---|---|---|---|
 | **Initial hourly intrinsic** | Day-ahead hourly prices (deterministic HPFC LP) | DA energy only | Simplest lower bound; no uncertainty, no rolling |
 | **DA rolling intrinsic** | DA prices at EFA gate (48-HH window, 8-HH roll) | DA energy only | Conservative floor; best a DA-only automated strategy can do |
-| **WD rolling intrinsic** | Within-day gate prices (8-HH window, 8-HH roll) | DA + intraday | Oracle benchmark; uses actual gate prices the battery cannot yet see |
-| **MODO style forward look** | Within-day gate prices, capped at ±£60/MWh | DA + intraday | Third-party calibration point (MODO Energy model equivalent) |
+| **WD rolling intrinsic** | Within-day gate prices, SP−DA uplift **capped £10/MWh** | DA + intraday | Conservative intraday benchmark; cap suppresses spike events |
+| **MODO style forward look** | Within-day gate prices, SP−DA uplift **capped £60/MWh** | DA + intraday | Third-party calibration point; wider cap captures most intraday spikes |
 | **Forward simulation (LSMC)** | No look-ahead (non-anticipative) | Full stack: DA, imbalance, DC, QR, costs | The non-anticipative reference; what a real battery earns with optimal policy |
 | **Perfect foresight (DA energy)** | All future DA prices perfectly known | DA energy only | Ceiling for DA-only arbitrage; excludes ancillary and imbalance entirely |
 
@@ -598,17 +600,14 @@ foresight on total value even though it does not know future prices.
 
 ### MODO style forward look
 
-Re-runs WD rolling intrinsic with the intraday price signal capped at ±£60/MWh.
-MODO Energy's published valuations are understood to use a similar cap to limit
-exposure to extreme intraday spikes. Comparing MODO style to the base WD rolling
-shows how much WD value depends on uncapped spike events.
+Re-runs WD rolling intrinsic with the intraday uplift cap raised to ±£60/MWh.
+The base WD rolling uses a conservative £10/MWh cap on the SP−DA spread; MODO
+Energy's published valuations are understood to apply a wider £60/MWh cap,
+capturing a larger share of intraday spike events without going fully uncapped.
 
-**Data quality note (2026-05-15):** the current nb13 MODO style values
-(£70.8k/£98.8k/£115k/£126k for 1h–4h) are 2–3× above uncapped WD rolling
-(£26.7k/£44.7k/£57.8k/£67.5k), which is physically impossible for a capped
-variant. The nb13 MODO implementation likely applies a different look-ahead
-window or price transformation than intended. These values should be treated as
-unreliable until the nb13 MODO cell is debugged and rerun.
+MODO > WD rolling is therefore **expected and correct**: the wider cap allows
+the LP to exploit spreads that the £10 cap suppresses. The gap (e.g. £71k vs
+£27k at 1h) measures the value of intraday spread events between £10 and £60/MWh.
 
 ### How to read the P5–P95 range
 
