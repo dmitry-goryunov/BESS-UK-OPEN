@@ -1,38 +1,34 @@
 {
+  "2h": {
+    "status": "ok",
+    "elapsed_s": 175.1,
+    "output_nb": "C:\\ClaudeCode\\Research\\BESS\\bess_project\\data\\processed\\executed\\12_phase4_2h.ipynb",
+    "status_path": "C:\\ClaudeCode\\Research\\BESS\\bess_project\\data\\processed\\phase4_status_2h.jsonl",
+    "log_path": "C:\\ClaudeCode\\Research\\BESS\\bess_project\\data\\processed\\phase4_child_2h.log",
+    "returncode": 0
+  },
+  "1h": {
+    "status": "ok",
+    "elapsed_s": 175.1,
+    "output_nb": "C:\\ClaudeCode\\Research\\BESS\\bess_project\\data\\processed\\executed\\12_phase4_1h.ipynb",
+    "status_path": "C:\\ClaudeCode\\Research\\BESS\\bess_project\\data\\processed\\phase4_status_1h.jsonl",
+    "log_path": "C:\\ClaudeCode\\Research\\BESS\\bess_project\\data\\processed\\phase4_child_1h.log",
+    "returncode": 0
+  },
   "3h": {
     "status": "ok",
-    "elapsed_s": 225.9,
-    "output_nb": "g:\\My Drive\\Research\\BESS\\bess_project\\data\\processed\\executed\\12_phase4_3h.ipynb",
-    "status_path": "g:\\My Drive\\Research\\BESS\\bess_project\\data\\processed\\phase4_status_3h.jsonl",
-    "log_path": "g:\\My Drive\\Research\\BESS\\bess_project\\data\\processed\\phase4_child_3h.log",
+    "elapsed_s": 180.1,
+    "output_nb": "C:\\ClaudeCode\\Research\\BESS\\bess_project\\data\\processed\\executed\\12_phase4_3h.ipynb",
+    "status_path": "C:\\ClaudeCode\\Research\\BESS\\bess_project\\data\\processed\\phase4_status_3h.jsonl",
+    "log_path": "C:\\ClaudeCode\\Research\\BESS\\bess_project\\data\\processed\\phase4_child_3h.log",
     "returncode": 0
   },
   "4h": {
     "status": "ok",
-    "elapsed_s": 230.5,
-    "output_nb": "g:\\My Drive\\Research\\BESS\\bess_project\\data\\processed\\executed\\12_phase4_4h.ipynb",
-    "status_path": "g:\\My Drive\\Research\\BESS\\bess_project\\data\\processed\\phase4_status_4h.jsonl",
-    "log_path": "g:\\My Drive\\Research\\BESS\\bess_project\\data\\processed\\phase4_child_4h.log",
+    "elapsed_s": 190.1,
+    "output_nb": "C:\\ClaudeCode\\Research\\BESS\\bess_project\\data\\processed\\executed\\12_phase4_4h.ipynb",
+    "status_path": "C:\\ClaudeCode\\Research\\BESS\\bess_project\\data\\processed\\phase4_status_4h.jsonl",
+    "log_path": "C:\\ClaudeCode\\Research\\BESS\\bess_project\\data\\processed\\phase4_child_4h.log",
     "returncode": 0
-  },
-  "2h": {
-    "status": "ok",
-    "elapsed_s": 150.2,
-    "output_nb": "g:\\My Drive\\Research\\BESS\\bess_project\\data\\processed\\executed\\12_phase4_2h.ipynb",
-    "status_path": "g:\\My Drive\\Research\\BESS\\bess_project\\data\\processed\\phase4_status_2h.jsonl",
-    "log_path": "g:\\My Drive\\Research\\BESS\\bess_project\\data\\processed\\phase4_child_2h.log",
-    "returncode": 0,
-    "stall_detected": true,
-    "stall_elapsed_s": 901.8
-  },
-  "1h": {
-    "status": "ok",
-    "elapsed_s": 150.2,
-    "output_nb": "g:\\My Drive\\Research\\BESS\\bess_project\\data\\processed\\executed\\12_phase4_1h.ipynb",
-    "status_path": "g:\\My Drive\\Research\\BESS\\bess_project\\data\\processed\\phase4_status_1h.jsonl",
-    "log_path": "g:\\My Drive\\Research\\BESS\\bess_project\\data\\processed\\phase4_child_1h.log",
-    "returncode": 0,
-    "stall_detected": true,
-    "stall_elapsed_s": 906.8
   }
 }

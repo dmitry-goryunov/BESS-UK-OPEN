@@ -1,319 +1,385 @@
-# BESS Stochastic Valuation — Claude Code Context
+# BESS Stochastic Valuation — Master Reference
 
-This project contains a stochastic MTM valuation framework for a GB fast-cycle
-(1–2h) Battery Energy Storage System, implemented in Python/Jupyter.
-
-The full methodology, vendor landscape, risk taxonomy, and revenue stack analysis
-are in the `docs/` folder. The stochastic valuation plan is in
-`docs/stochastic_plan.md`. The pricing items reference is in
-`docs/pricing_items.md`.
+_Last updated: 2026-05-17. Read this file first, every session._
 
 ---
 
-## Project structure
+## Asset
 
-```
-bess_project/
-├── CLAUDE.md                   ← you are here (auto-loaded by Claude Code)
-├── docs/
-│   ├── stochastic_plan.md      ← 10-phase MTM valuation plan
-│   ├── pricing_items.md        ← full list of priceable items
-│   ├── revenue_stack.md        ← GB revenue stack, current numbers
-│   └── vendor_landscape.md     ← KYOS vs Aurora, Modo, optimisers
-├── src/
-│   ├── processes/
-│   │   ├── schwartz_smith.py   ← two-factor Kalman calibration
-│   │   ├── hpfc.py             ← hourly price forward curve (PCA shape)
-│   │   ├── imbalance.py        ← imbalance basis OU + jump process
-│   │   └── ancillary.py        ← DC/DM/DR/QR AR(1) + saturation curve
-│   ├── asset/
-│   │   ├── battery.py          ← asset envelope, SoC/SoH state variables
-│   │   └── degradation.py      ← calendar + cycle fade, rainflow
-│   ├── optimisation/
-│   │   ├── lsmc.py             ← LSMC backward induction core
-│   │   ├── rolling_intrinsic.py← deterministic LP benchmark
-│   │   └── dual_bound.py       ← Andersen-Broadie upper bound
-│   ├── valuation/
-│   │   ├── mtm.py              ← MTM aggregation + contract overlay
-│   │   ├── greeks.py           ← bump-and-revalue Greek engine
-│   │   └── var_cvar.py         ← VaR / CVaR / scenario stress
-│   └── attribution/
-│       └── pnl_explain.py      ← daily P&L decomposition
-├── notebooks/
-│   ├── 01_calibration.ipynb
-│   ├── 02_simulation.ipynb
-│   ├── 03_lsmc_valuation.ipynb
-│   ├── 04_greeks_var.ipynb
-│   └── 05_backtest.ipynb
-├── data/
-│   ├── raw/                    ← NESO EAC, Elexon BMRS, EPEX DA/ID
-│   └── processed/
-└── tests/
-```
+| Parameter | Value |
+|---|---|
+| Market | Great Britain (GB) |
+| Rated power | 100 MW |
+| Duration sweep | 1h / 2h / 3h / 4h |
+| Energy (2h central) | 200 MWh |
+| AC-AC RTE | 88% (η_c = η_d = 0.9381) |
+| SoC bounds | 10–90% of nameplate |
+| VOM | £1.2/MWh on throughput |
+| Degradation shadow cost | £6.0/MWh (λ_deg_init) |
+| Availability | 96% |
+| As-of date | 2026-05-03 (pinned in nb12: `AS_OF_DATE`) |
 
 ---
 
-## Asset envelope (reference case)
+## Revenue Stack
 
-```python
-ASSET = {
-    "power_mw":        50.0,      # MW nameplate
-    "energy_mwh":     100.0,      # MWh nameplate (2h duration)
-    "eta_charge":       0.938,    # √0.88 AC-AC round-trip
-    "eta_discharge":    0.938,
-    "soc_min":          0.10,     # 10% floor
-    "soc_max":          0.90,     # 90% ceiling
-    "c_rate_max":       1.0,      # 1C for DC qualification
-    "aux_load_mw":      0.35,     # HVAC + BMS
-    "availability":     0.96,     # annual uptime
-    "efc_per_year":     520,      # from OEM warranty
-    "soh_augment_trigger": 0.82,  # augment when usable < 82%
-    "capex_gbp_kwh":  220.0,      # UK 2h LFP, 2025 vintage
-    "fom_gbp_kw_yr":    8.0,
-    "vom_gbp_mwh":      1.2,
-    "life_years":      15,
-    "augment_years":  [4, 8, 12],
-    "augment_gbp_kwh": 60.0,
-}
-```
-
----
-
-## Stochastic process spec (quick reference)
-
-### Baseload price — Schwartz-Smith two-factor
-
-```
-ln P_t  =  χ_t  +  ξ_t  +  f(t)          f(t) = seasonal/hourly shape
-
-dχ_t  =  −κ · χ_t · dt  +  σ_χ · dW_χ   (short-term, mean-reverting)
-dξ_t  =  μ_ξ · dt        +  σ_ξ · dW_ξ   (long-term, drifting equilibrium)
-corr(dW_χ, dW_ξ) = ρ
-
-Calibrate: Kalman filter on log-forwards (forward_uk.xlsx UBLIMc1–36; fallback: EEX GB baseload 1m–3y)
-```
-
-### Hourly shape — PCA decomposition
-
-```
-ln P_{h,t}  =  ln P_t  +  Σ_{k=1}^{3} λ_k(t) · φ_k(h)
-dλ_k  =  −α_k · λ_k · dt  +  σ_λk · dW_λk
-Calibrate: eigendecomposition of daily 24-dim shape matrix
-```
-
-### Imbalance basis
-
-```
-P_IMB,t  =  P_DA,t  +  Δ_t
-dΔ_t  =  −θ_Δ · Δ_t · dt  +  σ_Δ · dW_Δ  +  J_t    (OU + asymmetric jumps)
-J_t ~ compound Poisson: intensity λ_J, size ~ asymmetric double-exponential
-Calibrate: MLE on Elexon DA–SP settlement price pairs
-```
-
-### Ancillary clearing by product
-
-```
-π_{k,t}  =  (fleet-level) · max(0, p_res · (1 − Q_t / Q_req)^γ)
-Within-path variation: AR(1) per EFA block
-π_{k,b,t+1}  =  φ_k · π_{k,b,t}  +  ε_{k,b,t}
-γ calibrated to observed DCL saturation 2021–2024 (γ ≈ 2.1 historically)
-```
-
-### Joint correlation matrix
-
-```
-             χ      ξ      λ₁     λ₂     Δ      π_DC
-χ          1.00   0.30   0.45   0.20   0.55   -0.25
-ξ          0.30   1.00   0.15   0.05   0.10   -0.10
-λ₁ (level) 0.45   0.15   1.00   0.20   0.30   -0.20
-λ₂ (slope) 0.20   0.05   0.20   1.00   0.15   -0.10
-Δ (imbals) 0.55   0.10   0.30   0.15   1.00   -0.30
-π_DC       -0.25  -0.10  -0.20  -0.10  -0.30   1.00
-
-Note: negative DA–ancillary correlation captures the fact that
-high-price days (scarcity) are days when batteries switch from
-ancillary mode to wholesale; must be captured jointly.
-```
-
----
-
-## LSMC basis functions
-
-```python
-# At each SoC/SoH grid node, regress continuation value on:
-def basis(P_da, P_id, delta_imb, pi_dc, pi_qr, E, t, EFA_block):
-    return [
-        1,
-        P_da, P_da**2, P_da**3,
-        P_id - P_da,              # intraday premium
-        delta_imb,                # imbalance basis
-        pi_dc, pi_qr,             # ancillary clearing
-        E, E**2,                  # SoC (endogenous)
-        E * P_da,                 # SoC × price interaction
-        np.sin(2*np.pi*t/24),     # hour-of-day
-        np.cos(2*np.pi*t/24),
-        float(EFA_block),         # EFA block ID (0–5)
-    ]
-# Polynomial degree 2, plus hour dummies
-# Nadarajah et al. 2017 EJOR 256: use regress-later (LSML) for tighter dual bounds
-```
-
----
-
-## Co-optimisation constraints
-
-```python
-# At each half-hour t, decision vector u = (c, d, r_DC, r_DM, r_DR, r_QR, r_BR)
-# All in MW
-
-# Power headroom
-abs(d - c) + r_DC + r_DM + r_DR + r_QR + r_BR  <=  P_bar
-
-# Energy headroom for discharge services (need stored energy to deliver)
-E_t - (r_DC + r_DM + r_DR + r_QR) * dt / eta_d  >=  E_min
-
-# Energy headroom for charge services (need space to absorb)
-E_t + (r_DC_dn + r_DR_dn + r_BR_dn) * eta_c * dt  <=  E_max(SoH_t)
-
-# Service sustain requirements (simplified)
-r_DC_t >= 0  for at least 2 consecutive EFA blocks  (15-min delivery)
-r_QR_t >= 0  for at least 1 half-hour period       (1-min delivery)
-r_DR_t >= 0  for at least 4 EFA blocks             (60-min sustain)
-
-# Opportunity cost condition — bid ancillary only if:
-# pi_k  >=  E[max intra-block DA/ID spread | E_t]
-# This is the key LSMC continuation value comparison
-```
-
----
-
-## Degradation model
-
-```python
-# Calendar fade (Arrhenius approximation)
-def calendar_fade(dt_years, avg_soc, temp_celsius=20):
-    A_cal = 4.14e-10   # LFP pre-exponential (illustrative)
-    Ea    = 2.47e4     # activation energy J/mol
-    R     = 8.314
-    rate  = A_cal * np.exp(-Ea / (R * (temp_celsius + 273.15)))
-    soc_factor = 1 + 0.5 * (avg_soc - 0.5)  # penalises high SoC
-    return rate * soc_factor * dt_years
-
-# Cycle fade (Wöhler / power law in DoD)
-def cycle_fade(efc, dod, beta=2.3):   # beta=2.3 typical LFP
-    return (dod ** beta) * efc / N_f_reference
-
-# Shadow price of degradation (endogenous)
-# lambda_deg = (replacement_capex_gbp_mwh) * (dN_cycles / d_throughput_mwh)
-# Enters dispatch as a per-MWh throughput cost:
-# c_deg_t = lambda_deg * (c_t + d_t) * dt
-```
-
----
-
-## MTM aggregation
-
-```python
-# Full MTM (t=0)
-MTM = (
-    alpha   * E_Q[ sum_t discount(t) * cashflow_merchant(S_t, policy(state_t)) ]
-  + (1-alpha) * PV_contracted_legs     # toll fee, floor, CM contracts
-  + MTM_floor_optionality             # put on annual revenue, LSMC-on-LSMC
-  - PV_optimiser_fee
-  - PV_opex
-  - PV_augmentation
-  - PV_degradation_shadow_cost
-)
-# alpha = fraction of portfolio that is merchant (vs contracted)
-```
-
----
-
-## Greek definitions (bump-and-revalue)
-
-```python
-GREEKS = {
-    "delta_baseload":   "∂MTM/∂F_baseload   — shift all baseload forwards +£1/MWh",
-    "delta_peak_twist": "∂MTM/∂(F_peak−F_off) — shift peak forwards +£1/MWh",
-    "delta_pc1_shape":  "∂MTM/∂λ₁           — shift PCA level factor +1σ",
-    "delta_pc2_shape":  "∂MTM/∂λ₂           — shift PCA slope factor +1σ",
-    "vega_da":          "∂MTM/∂σ_DA          — shift DA vol +10%",
-    "vega_id":          "∂MTM/∂σ_ID          — shift ID vol +10%",
-    "delta_imb_drift":  "∂MTM/∂E[Δ]          — shift imbalance mean +£5/MWh",
-    "delta_imb_vol":    "∂MTM/∂σ_Δ           — shift imbalance vol +10%",
-    "delta_dc":         "∂MTM/∂E[π_DC]       — shift DC clearing +£1/MW/h",
-    "delta_qr":         "∂MTM/∂E[π_QR]       — shift QR clearing +£1/MW/h",
-    "delta_saturation": "∂MTM/∂γ             — shift saturation exponent +0.5",
-    "delta_skip_rate":  "∂MTM/∂skip          — shift BM skip rate +10pp",
-    "delta_soh":        "∂MTM/∂SoH_rate      — shift degradation rate +20%",
-    "delta_rte":        "∂MTM/∂η             — shift RTE −2pp",
-    "delta_avail":      "∂MTM/∂avail         — shift availability −2pp",
-    "rho":              "∂MTM/∂r             — shift discount rate +50bps",
-}
-```
-
----
-
-## Daily P&L attribution
-
-```
-ΔMTM  =  Θ (theta, time decay)
-       +  Σ_k Greek_k × ΔFactor_k    (delta-explain, bump-and-revalue)
-       +  [Realised CF − E[CF]]       (execution surprise vs model)
-       +  ΔSoH_actual − ΔSoH_model   (degradation surprise)
-       +  Calibration effect          (recalibration to new history)
-       +  Residual                    (< 5% of |ΔMTM| target)
-```
-
----
-
-## Data sources (priority order)
-
-| Priority | Source | What to pull |
+### Modelled
+| Stream | Status | Location |
 |---|---|---|
-| 1 | NESO Data Portal API | EAC results, skip rates, balancing costs, ancillary volumes |
-| 1 | Elexon BMRS API | DA prices, SP, NIV, BOA data, BMU data |
-| 1 | EPEX SPOT | DA auction (N2EX/EPEX), ID continuous (M7) |
-| 1 | **forward_uk.xlsx** (`data/raw/forward_uk.xlsx`) | GB power forwards — baseload (UBLIMc1–36) and peak (UPLMc1–36), monthly tenors 1–36 m; used for Schwartz-Smith Kalman calibration. Load via `src.data.fetch_forwards --source forward_uk`. |
-| 2 | Modo Energy API | ME BESS GB Index, actual battery revenues, asset benchmarks |
-| 2 | ICE/EEX *(fallback)* | GB power forwards if forward_uk.xlsx unavailable; load via `--source ice` or `--source eex` |
-| 3 | Cornwall Insight | BESS Revenue Index, saturation forecasts |
-| 3 | Aurora/Baringa | Revenue forecasts for reconciliation |
+| DA energy (HPFC-anchored) | ✅ live | `src/optimisation/dispatch.py` |
+| Imbalance basis (SP−DA) | ✅ live, calibrated post-fix | `src/optimisation/dispatch.py` |
+| Dynamic Containment (DC) | ✅ live | mode grid `dc_levels` |
+| Quick Reserve (QR) | ✅ live | mode grid `qr_levels` |
+| Balancing Mechanism (BM) | ✅ Phase 3 (validated) | mode grid `bm_levels` |
+| VOM + degradation costs | ✅ live | dispatch cashflow |
+| Capacity Market (CM) | ✅ deterministic overlay | `scripts/apply_capacity_market_overlay.py`, £6k/MW/yr central |
+| Dynamic Moderation/Regulation | ❌ not modelled | in Modo index, not calibrated |
+| Slow Reserve | ❌ not modelled | added to Modo Apr 2026 |
+
+### Excluded (by design, consistent with Modo)
+- Mandatory Frequency Response, TNUoS/Triads, DUoS
+- Tolling/floor arrangements, bilateral PPAs
+- Voltage/reactive power Pathfinder
 
 ---
 
-## Key literature
+## Price Processes
 
-- Boogert & de Jong (2008) — LSMC for gas storage (*J. Derivatives* 15(3))
-- Schwartz & Smith (2000) — two-factor commodity model (*Mgt Sci* 46)
-- Lucia & Schwartz (2002) — seasonality in electricity
-- Cartea & Figueroa (2005) — MRJD for power (*Appl. Math. Finance* 12)
-- Nadarajah, Margot & Secomandi (2017) — LSMC dual bounds (*EJOR* 256)
-- Löhndorf, Wozabal & Minner (2013) — SDDP+ADP for hydro storage (*OR* 61)
-- Finnah, Gönsch & Ziel (2022) — GB imbalance modelling (*EJOR* 301)
-- Shi, Xu & Baldick (2019) — convex cycle-based degradation cost (*IEEE T-SG*)
-- Brown, Smith & Sun (2010) — information relaxation dual bounds (*OR*)
+| Process | Model | Key calibrated params |
+|---|---|---|
+| DA baseload | Schwartz-Smith two-factor | κ, σ_χ, μ_ξ, σ_ξ, ρ |
+| Intraday shape | HPFC × SS relative move | Hourly shape multipliers 0.71–1.46 |
+| Imbalance basis (SP−DA) | OU + asymmetric jumps | See `imbalance_params.json` |
+| DC clearing | AR(1) per EFA block + saturation curve | DC_Low.mu = 5.1 £/MW/h |
+| QR clearing | AR(1) per EFA block | QR_Pos.mu = 3.6 £/MW/h |
+| BM offer price | Constant mean | π_bm mean ≈ £79.9/MWh, p_activation = 0.12 |
 
----
-
-## Commands Claude Code should know
-
-```bash
-# Install dependencies
-pip install numpy scipy pandas matplotlib scikit-learn cvxpy filterpy joblib
-
-# Run calibration notebook
-jupyter nbconvert --to notebook --execute notebooks/01_calibration.ipynb
-
-# Run full LSMC valuation (single path test)
-python -m src.optimisation.lsmc --paths 100 --steps 17520 --seed 42
-
-# Run backtest
-python -m src.attribution.pnl_explain --start 2024-01-01 --end 2025-12-31
-
-# Run Greek bump engine
-python -m src.valuation.greeks --factor baseload --bump 1.0
-
-# Run CVaR
-python -m src.valuation.var_cvar --alpha 0.95 --horizon 10
+### Imbalance calibration (post-fix, `data/processed/imbalance_params.json`)
 ```
+theta_delta   = 0.8281
+sigma_delta   = 18.6510
+lambda_jump   = 0.0429/HH
+jump_scale_pos= 109.76
+jump_scale_neg= 74.10
+p_pos         = 0.3580    ← was 0.993 (bug), fixed 2026-05-08
+mu_delta      = 0.2207    ← implied mean ≈ −£0.41/MWh (near-zero, correct)
+```
+
+**DO NOT revert p_pos to 0.993.** The old value was caused by duplicate zero-volume N2EX DA rows
+in `data/raw/elexon_da_prices.parquet` that doubled the SP-DA observations and created a spurious
+positive imbalance mean of £48.55/MWh. Fixed in `src/data/fetch_elexon.py` and
+`src/processes/imbalance.py` (Action 10).
+
+Signal lag: `delta_signal[t] = delta_realized[t-1]` — imbalance dispatch uses the
+**previous** half-hour's realized spread, not the current one (prevents clairvoyant dispatch).
+
+---
+
+## LSMC Architecture
+
+### Co-optimisation constraints (per HH)
+```
+|net_mw| + r_dc_mw + r_qr_mw + r_bm_mw  ≤  P_bar            (power)
+E_t − (r_dc + r_qr + r_bm) × sustain_h / η_d  ≥  E_min      (discharge headroom)
+E_t + (r_dc + r_qr + r_bm) × η_c × sustain_h  ≤  E_max      (charge headroom)
+```
+
+`reserve_sustain_h = 1.0` is the central realism setting (pending lock-in to nb12 defaults).
+
+### Current mode grid (nb12 / nb13 as of 2026-05-14)
+```python
+dc_levels  = [0.0, 0.5]          # Step 1 of LSMC_CLEANUP: add allow_ancillary_stacking=False
+qr_levels  = [0.0, 0.25]
+bm_levels  = [0.0, 0.25, 0.5]    # Phase 3
+net_levels = [-1, -0.5, 0, 0.5, 1]
+```
+
+### Key LSMC config (`src/config.py`)
+```python
+continuation_value_cap_gbp = 25_000_000   # DO NOT lower — was 3m, clipped 4h policy badly
+n_soc_nodes = max(9, 3 * duration_h)
+```
+
+### Basis features (efa_blocks mode, N_BASIS = 38)
+15 base features + 12 EFA-block DA forward-strip features (6 block means + 6 spreads) +
+1 soc_x_da_max feature (`E_scaled × da_fwd_max`) + 10 ancillary features.
+
+### Non-anticipativeness
+`cont_beta` branch in `forward()` is non-anticipative: builds `φ(S(t))` from current-step
+prices/SoC only. Legacy fallback using `policy.beta[t+1]·φ(S_{t+1})` reads t+1 prices
+(clairvoyant) but is preserved for backward compatibility with pre-change pickled policies.
+
+---
+
+## Notebooks
+
+| Notebook | Purpose |
+|---|---|
+| nb00–nb08 | Early development (data fetching, calibration, process fitting) |
+| nb11 | ? (missing from summary) |
+| **nb12** | Single-duration LSMC run; source of truth for config; run before nb13 |
+| **nb13** | Phase 4 duration sweep (1h–4h); produces all comparison CSVs/PNGs |
+| nb14 | Phase 4 diagnostics |
+| **nb15** | WD rolling vs WD-like LSMC comparison |
+| **nb16** | Structural LSMC counterfactuals (no_imbalance, no_ancillary, energy_only) |
+| nb17 | ? |
+| **nb19** | Historical BESS index backtest; locked base case vs Modo |
+| (missing) | nb09, nb10, nb18 not in repo |
+
+**Target:** `notebooks/20_historical_lsmc.ipynb` — LSMC on actual 2024–26 prices (Option B).
+
+---
+
+## Key Source Files
+
+| File | Role |
+|---|---|
+| `src/optimisation/lsmc.py` | LSMC core: `Policy`, `backward()`, `forward()`, `forward_parallel()` |
+| `src/optimisation/dispatch.py` | Mode enumeration (`enumerate_modes()`), cashflow formula |
+| `src/config.py` | Default LSMC and process config |
+| `src/processes/imbalance.py` | Imbalance OU+jump calibration and simulation |
+| `src/data/fetch_elexon.py` | DA price fetch (N2EX volume-weighted, de-duped) |
+| `src/data/fetch_elexon_bm.py` | BM volume fetch (Python312, not .venv_test; checkpoints every 30 days) |
+| `src/backtest/historical_index.py` | Rolling LP + WD + ancillary; `WD_CAP_DEFAULT = 60.0` |
+| `src/backtest/ancillary_revenue.py` | `DEFAULT_HEADROOM` — DC=0.35 locked |
+| `src/backtest/bm_revenue.py` | BM index from BOA volumes × system price |
+| `streamlit_phase4_sweep.py` | Main Streamlit app (3 sections) |
+
+### Key data files
+| File | Contents | Status |
+|---|---|---|
+| `data/processed/imbalance_params.json` | Calibrated OU+jump params | ✅ post-fix (p_pos=0.358) |
+| `data/processed/ancillary_params.json` | DC/QR AR(1) params | ✅ calibrated |
+| `data/processed/sim_bundle.pkl` | 1000-path, 17520-step simulation bundle | ✅ rebuilt post-fix |
+| `data/processed/phase4_all_durations_comparison.csv` | Main method-comparison results | ⚠️ STALE — pre-imbalance-fix values (1h LSMC = £75.9k). Do not use until nb13 rerun. |
+| `data/raw/elexon_da_prices.parquet` | DA prices (APXMIDP only, positive-volume filtered) | ✅ |
+| `data/raw/elexon_bm_volumes.parquet` | BM volumes, 952k rows, Jan 2024–Apr 2026 | ✅ |
+| `MODO 1H.csv` | Modo monthly index Jan 2020–May 2026 | ✅ source of truth |
+| `MODO 2H.csv` | Modo monthly index Jan 2023–May 2026 | ✅ source of truth |
+
+---
+
+## Units and Scale
+
+**CRITICAL:** LSMC attribution values (e.g. in `lsmc_attribution_1h.json`) are in **£m/year
+for the 100 MW asset**. To convert to £k/MW/yr: `mean_m × 10`.
+
+Example: `imbalance mean_m = 1.092` → `1.092 × 10 = £10.92k/MW/yr`.
+
+All Modo and KYOS benchmarks are quoted in £k/MW/yr — always convert before comparing.
+
+---
+
+## Current Valuation State
+
+### Locked backtest base case (nb19, `historical_index.py`)
+DC=35%, WD cap=£60/MWh, gross (costs excluded for like-for-like vs Modo):
+
+| Stream | 1H | 2H |
+|---|---|---|
+| DA | £2.1k | £11.3k |
+| WD (SP−DA, cap £60) | £32.4k | £40.4k |
+| Ancillary (DC/DM/DR/QR) | £11.2k | £11.2k |
+| BM fleet avg | £7.2k | £7.9k |
+| **Total model** | **£52.9k** | **£70.8k** |
+| Modo (Apr 2024–Apr 2026) | £50.8k | £71.9k |
+| Gap | −£2.0k ✓ | +£1.1k ✓ |
+
+**This gap is closed. Do not re-open the headroom calibration.**
+
+### LSMC_CLEANUP result (2026-05-17, run_lsmc_sweep.py — 250 paths, 2160 steps, no-stacking, B1 fixed)
+| Duration | LSMC £k/MW/yr | Top action | Clip | Stacked |
+|---|---|---|---|---|
+| 1h | 16.6k | QR=0.25 (66.5%) | 0% | 0% |
+| 2h | 34.7k | DC=0.50 (60.7%) | 0% | 0% |
+| 3h | 42.9k | DC=0.50, BM=0.25 (61.3%) | 0% | 0% |
+| 4h | 43.3k | DC=0.50, BM=0.25 (60.5%) | 0% | 0% |
+
+**2h/1h = 2.08× > Modo 1.52× gate. ALL VALIDATION CHECKS PASSED.**
+
+Note: 1h QR-dominant (no DC) is **physically correct** — a 1h battery cannot sustain 50 MW DC
+commitment for 1h in both directions (requires 100.2 MWh swing vs 80 MWh usable range).
+Values use raw unanchored bundle prices (no HPFC), so absolute level is lower than HPFC-anchored;
+ratios and structural checks are valid.
+
+Remaining gap to Modo (£47.7k/£72.5k): HPFC anchoring ~£10–15k + BM/historical basis refinement.
+
+---
+
+## External Benchmarks
+
+| Benchmark | 1H | 2H | Notes |
+|---|---|---|---|
+| Modo Energy (May25–May26) | £47.7k | £72.5k | Realized BMU fleet; includes DA, ID, BM, DC/DM/DR, QR/BR, CM |
+| Modo Energy (Apr24–Apr26) | £50.8k | £71.9k | Period matching nb19 backtest |
+| KYOS GB index (Jan–Dec 2025) | £63k | — | ID + imbalance only; no separate DA; LSMC methodology |
+| KYOS GB forecast 2027 | £83.0k avg | — | P10 £72.3k; includes passive imbalance capped at 30% |
+
+Modo index is an **optimal dispatch model on actual prices, BMU fleet only** — not actual fleet revenues.
+KYOS index uses intraday perfect foresight for the realized index (not forward). Both are model-to-model comparisons.
+
+**Modo methodology key points (read April 2026):**
+- Imbalance = `(Metered − PN − ABSVD) × System price` (passive, ABSVD-adjusted) — near-zero mean
+- Wholesale: hourly PN shape → avg(N2EX, EPEX) DA; sub-hourly PN shape → EPEX RPD HH continuous
+- DC performance penalties NOT included (no public data) — consistent with project
+- Slow Reserve added Apr 2026 — not yet in project
+- 2H/1H = 1.52× driven partly by sub-hourly PN volume priced at intraday (continuous market)
+
+---
+
+## Known Bugs and Design Issues
+
+### B1 — Double discount in `cont_beta` forward branch (OUTSTANDING)
+**File:** `src/optimisation/lsmc.py`, `forward()` ~line 849
+
+`backward()` regresses on `disc·V(t+1)`, so `cont_beta` ≈ `E[disc·V(t+1)]`.
+`forward()` then multiplies by `disc` again: `Q = CF + disc * cont` → effectively `CF + disc²·V(t+1)`.
+
+Per-step bias is tiny (disc ≈ 0.999995/HH) but systematically tilts toward cashflow-now.
+
+**Preferred fix (option 2):** Regress `V_cont` (undiscounted) in `backward()` at ~line 547.
+Leave `forward()` unchanged — both branches then predict undiscounted next-step value.
+Fix before any production/final-reporting run.
+
+### C1 — `cont_beta` fitted at constant SoC per grid node (design note, not a bug)
+Within-cell SoC sensitivity is absent — the coefficients reflect a constant-E surface.
+Forward pass uses actual path SoC but the fitted surface doesn't vary within a cell.
+Worth bilinear interpolation across `j` if dispatch shows visible plateau artefacts.
+
+---
+
+## Architecture Gotchas
+
+### 1. Backtest headroom ≠ LSMC mode grid — CRITICAL
+These are two completely separate systems. Changing one has **zero effect** on the other.
+
+**Backtest** (`src/backtest/ancillary_revenue.py`):
+- Fixed fractions: `DEFAULT_HEADROOM = {DC: 0.35, DM: 0.10, DR: 0.05, QR: 0.15}`
+- Used by nb19 (`historical_index.py`) only
+- DA power = `P_bar × (1 − total_headroom)` passed to rolling LP
+
+**LSMC mode grid** (`src/optimisation/dispatch.py`):
+- `dc_levels`, `qr_levels`, `bm_levels` → endogenous decision variables
+- Used by nb12, nb13 only
+- Changing `DEFAULT_HEADROOM` has zero effect on nb13
+
+### 2. `phase4_all_durations_comparison.csv` is STALE
+Contains pre-imbalance-fix values (1h LSMC = £75.9k, imbalance label = "WD/intraday").
+Do not cite these figures. They will be overwritten once nb13 is rerun (LSMC_CLEANUP step 3).
+
+### 3. Streamlit / Python version
+```bash
+C:\Users\User\AppData\Local\Programs\Python\Python312\python.exe -m streamlit run streamlit_phase4_sweep.py
+```
+BM data fetch also uses Python312, not `.venv_test`.
+
+### 4. Git: BESS-UK-OPEN remote
+```bash
+git push open main --force    # always force — histories have diverged
+```
+`.vscode` directory has Google Drive permission issue → blocks `git checkout`.
+Use `git restore --source=main --worktree -- <files>` instead of full checkout.
+
+### 5. Windows zmq deadlock (fixed)
+`~/.ipython/profile_default/startup/00_win_selector_loop.py` — sets SelectorEventLoop.
+Already applied. Do not remove.
+
+---
+
+## Pending Work (priority order)
+
+1. ~~**Fix B1**~~ — **DONE** (commit a004651): `cont_beta` now regresses on undiscounted V(t+1); forward applies `disc` once. No double-discount.
+2. ~~**LSMC_CLEANUP step 2**~~ — **DONE**: `reserve_sustain_h=1.0` already in `src/config.py` line 235, inherited by nb12.
+3. ~~**LSMC_CLEANUP step 1**~~ — **DONE**: `allow_ancillary_stacking=False` added to `enumerate_modes()` in `src/optimisation/dispatch.py`; wired into nb12 `PHASE4_RUNS['medium']`.
+4. ~~**LSMC_CLEANUP step 3**~~ — **DONE** (2026-05-17): `run_lsmc_sweep.py` ran 4 durations (250 paths, 2160 steps). All validation checks PASS. Outputs: `lsmc_attribution_{1h..4h}.json`, `phase4_all_durations_comparison.{csv,json}`.
+5. ~~**Rerun nb16**~~ — **DONE** (2026-05-17): structural counterfactuals rerun with cleaned basis/no-stacking/BM modes. Outputs: `lsmc_counterfactual_results.{json,png}`.
+6. ~~**Capacity Market overlay**~~ — **DONE** (2026-05-17): deterministic £6k/MW/yr overlay added via `scripts/apply_capacity_market_overlay.py`; outputs `capacity_market_overlay.{csv,json}` and appends `Forward simulation (LSMC + CM overlay)` rows to `phase4_all_durations_comparison.{csv,json}`.
+7. ~~**Option B1**~~ — **DONE** (2026-05-17): `notebooks/20_historical_lsmc.py` / `.ipynb` runs perfect-foresight LP on actual 2024–26 DA, SP, and WD60 price paths. Notebook is self-contained with visible inputs/cells. Outputs `historical_lsmc_b1_summary.{csv,json,png}`, `historical_lsmc_b1_prices.parquet`, `historical_lsmc_b1_vs_nb13.{csv,png}`, and 1h/2h stacked nr20-vs-nr13 tables `historical_lsmc_b1_nr13_stacked_{table,wide}.csv`.
+8. **Slow Reserve** — add to Phase 3 mode grid once QR is stable (SR ≈ QR structure)
+9. **Rebuild 5000-path production bundle:**
+   ```bash
+   python scripts/generate_sim_bundle.py --paths 5000 --steps 17520 --seed 42
+   ```
+
+### LSMC_CLEANUP validation checklist — ALL PASSED (2026-05-17)
+- ✅ 2h/1h LSMC ratio ≥ 1.30× → 2.08×
+- ✅ Continuation clipping = 0.0% across all 4 durations
+- ✅ Imbalance attribution 1h: £1.531m/yr (within £0.5–2.5m range)
+- ✅ Dominant mode is NOT stacked DC+QR (stacked% = 0.0% all durations)
+- ✅ `phase4_all_durations_comparison.csv` updated (2026-05-17)
+
+### nb16 structural counterfactuals — DONE (2026-05-17)
+Settings: 250 backward paths, 250 forward paths, 2160 HH, HPFC-anchored prices,
+`ridge_alpha=1.0`, EFA-block basis, duration-aware forward window, no DC+QR stacking,
+BM modes active except energy-only.
+
+| Case | 1h | 2h | 2h/1h |
+|---|---:|---:|---:|
+| Baseline full stack (nb13) | £1.66m | £3.47m | 2.08x |
+| No imbalance (delta=0) | £1.02m | £2.82m | 2.76x |
+| No ancillary (DA+imb+BM) | £1.49m | £2.84m | 1.90x |
+| Energy only (DA) | £0.43m | £0.97m | 2.25x |
+
+Implementation note: `delta_imb_scale` is applied by scaling `PathBundle.delta_imb`
+for both backward and forward passes; it is not an LSMC core config key.
+
+### Capacity Market overlay — DONE (2026-05-17)
+Central assumption: £6.0k/MW/yr deterministic CM revenue, added outside LSMC
+dispatch/training. For the 100 MW asset this is £0.6m/year.
+
+| Duration | LSMC | CM | LSMC + CM |
+|---|---:|---:|---:|
+| 1h | £16.6k | £6.0k | £22.6k |
+| 2h | £34.7k | £6.0k | £40.7k |
+| 3h | £42.9k | £6.0k | £48.9k |
+| 4h | £43.3k | £6.0k | £49.3k |
+
+Replace the flat £6k/MW/yr placeholder with CM register-derived duration-specific
+values once the EMRS/CM register extract is added.
+
+### Option B1 historical perfect-foresight LP — DONE (2026-05-17)
+Runner: `notebooks/20_historical_lsmc.py`; wrapper notebook:
+`notebooks/20_historical_lsmc.ipynb`.
+
+Coverage uses corrected raw files: 2024-04-01 to 2026-04-25, 36,229 aligned
+half-hours after inner-joining DA and SP by settlement date/period.
+
+| Stream | 1h | 2h |
+|---|---:|---:|
+| DA | £19.8k | £36.0k |
+| SP perfect foresight | £71.7k | £106.5k |
+| WD60 perfect foresight | £67.3k | £100.5k |
+
+Interpretation: these are clairvoyant upper benchmarks on actual prices, not a
+realized dispatch strategy. The old `perfect_foresight_summary_{1h,2h}.json`
+DA rows had duplicate-era coverage (~72k DA rows); use the new
+`historical_lsmc_b1_summary.*` outputs for Option B1.
+
+Additional notebook/comparison work completed (2026-05-17):
+- Rebuilt `notebooks/20_historical_lsmc.ipynb` as a self-contained notebook;
+  inputs, assumptions, load/align logic, LP runs, output writes, and comparison
+  cells are visible directly in the notebook (no `%run` wrapper).
+- Added unit conversion from `GBPk/MW/year` to `GBPm/year for 100 MW` via
+  `value_gbp_annualized_m = gbp_per_mw_year_k * 100 / 1000`.
+- Added direct nr20-vs-nr13 comparison for DA perfect-foresight:
+  `historical_lsmc_b1_vs_nb13.{csv,png}`.
+- Added stacked nr20/nr13 valuation tables for 1h and 2h only, sorted by
+  duration first (all 1h valuations, then all 2h valuations):
+  `historical_lsmc_b1_nr13_stacked_table.csv`,
+  `historical_lsmc_b1_nr13_stacked_wide.csv`, and
+  `historical_lsmc_b1_nr13_stacked.png`.
+
+---
+
+## Streamlit App
+
+Entry point: `streamlit_phase4_sweep.py`
+
+| Section | Content |
+|---|---|
+| Phase 4: Duration Sweep | nb13 method comparison 1h–4h; LSMC attribution |
+| Historical Index vs Modo | nb19 backtest vs Modo Energy (4 pages) |
+| Forward vs Realized | Three-way: nb13 WD / nb19 realized / nb13 LSMC (4 pages) |
+
+Public repo: `https://github.com/dmitry-goryunov/BESS-UK-OPEN.git` (remote: `open`)
+Live app: `https://bess-uk-open.streamlit.app`

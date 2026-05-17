@@ -1,0 +1,5 @@
+duration_h,base_method,overlay_method,base_gbp_per_mw_year_k,cm_gbp_per_mw_year_k,total_gbp_per_mw_year_k,base_value_gbp_annualized_m,cm_value_gbp_annualized_m,total_value_gbp_annualized_m,note
+1.0,Forward simulation (LSMC),Forward simulation (LSMC + CM overlay),16.633940341660896,6.0,22.633940341660896,1.6633940341660896,0.6,2.2633940341660894,Deterministic CM overlay; replace 6.0k/MW/yr with CM register-derived value when available.
+2.0,Forward simulation (LSMC),Forward simulation (LSMC + CM overlay),34.666856280598935,6.0,40.666856280598935,3.4666856280598934,0.6,4.0666856280598935,Deterministic CM overlay; replace 6.0k/MW/yr with CM register-derived value when available.
+3.0,Forward simulation (LSMC),Forward simulation (LSMC + CM overlay),42.937257200742025,6.0,48.937257200742025,4.293725720074202,0.6,4.893725720074202,Deterministic CM overlay; replace 6.0k/MW/yr with CM register-derived value when available.
+4.0,Forward simulation (LSMC),Forward simulation (LSMC + CM overlay),43.31845577700007,6.0,49.31845577700007,4.3318455777000064,0.6,4.931845577700006,Deterministic CM overlay; replace 6.0k/MW/yr with CM register-derived value when available.

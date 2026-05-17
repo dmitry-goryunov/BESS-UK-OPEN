@@ -1,10 +1,11 @@
 """
 BESS UK — Research Dashboard
 
-Three sections:
+Four sections:
 1. Phase 4 Duration Sweep  (notebook 13) — LSMC method comparison 1h–4h
 2. Historical BESS Index vs Modo (notebook 19) — calibrated backtest vs Modo Energy public index
-3. Forward vs Realized — nb13 LSMC/WD-rolling vs nb19 historical: price basis + optimality gap
+3. Historical LSMC B1 (notebook 20) — actual 2024-26 prices vs nb13 forward benchmarks
+4. Forward vs Realized — nb13 LSMC/WD-rolling vs nb19 historical: price basis + optimality gap
 """
 
 from __future__ import annotations
@@ -70,18 +71,54 @@ def optional_image(name: str) -> bytes | None:
     return load_image(path, path.stat().st_mtime_ns)
 
 
+def load_phase4_comparison() -> pd.DataFrame:
+    """Load full nb13 method set, including MODO and CM overlay rows."""
+    rows: list[pd.DataFrame] = []
+    for dur in [1.0, 2.0, 3.0, 4.0]:
+        path = PROCESSED / f"phase4_method_comparison_{dur:g}h.csv"
+        if path.exists():
+            frame = load_csv(path, path.stat().st_mtime_ns)
+            frame["duration_h"] = dur
+            rows.append(frame)
+
+    modo_path = PROCESSED / "phase4_modo_wd_rows.json"
+    if modo_path.exists():
+        modo_rows = load_json(modo_path, modo_path.stat().st_mtime_ns)
+        rows.append(pd.DataFrame(modo_rows))
+
+    agg = optional_csv("phase4_all_durations_comparison.csv")
+    if not agg.empty:
+        overlay = agg[agg["method"].eq("Forward simulation (LSMC + CM overlay)")].copy()
+        if not overlay.empty:
+            rows.append(overlay)
+
+    if rows:
+        df = pd.concat(rows, ignore_index=True, sort=False)
+        return df.drop_duplicates(["duration_h", "method"], keep="last")
+    return agg
+
+
 # ── Sidebar ───────────────────────────────────────────────────────────────────
 st.sidebar.title("🔋 BESS UK Research")
 section = st.sidebar.radio(
     "Section",
-    options=["Phase 4: Duration Sweep", "Historical Index vs Modo", "Forward vs Realized"],
+    options=[
+        "Phase 4: Duration Sweep",
+        "Historical Index vs Modo",
+        "Historical LSMC B1",
+        "Forward vs Realized",
+    ],
     index=0,
 )
 st.sidebar.divider()
 
 # ── Load shared data once (used by sections 1, 2, 3) ─────────────────────────
-df_comparison  = optional_csv("phase4_all_durations_comparison.csv")
+df_comparison  = load_phase4_comparison()
 df_attribution = optional_csv("phase4_all_durations_attribution.csv")
+df_b1_summary  = optional_csv("historical_lsmc_b1_summary.csv")
+df_b1_direct   = optional_csv("historical_lsmc_b1_vs_nb13.csv")
+df_b1_stacked  = optional_csv("historical_lsmc_b1_nr13_stacked_table.csv")
+df_b1_wide     = optional_csv("historical_lsmc_b1_nr13_stacked_wide.csv")
 
 _m1 = optional_csv("historical_index_1h_monthly.csv")
 _m2 = optional_csv("historical_index_2h_monthly.csv")
@@ -110,6 +147,7 @@ if section == "Phase 4: Duration Sweep":
         "WD rolling intrinsic",
         "MODO style forward look",
         "Forward simulation (LSMC)",
+        "Forward simulation (LSMC + CM overlay)",
         "Perfect foresight (DA energy)",
     ]
     COMPONENTS = [
@@ -654,7 +692,225 @@ and added on top. Ancillary revenue is duration-agnostic in this model
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
-# SECTION 3: Forward vs Realized
+# SECTION 3: Historical LSMC B1 (notebook 20)
+# ═══════════════════════════════════════════════════════════════════════════════
+elif section == "Historical LSMC B1":
+
+    page = st.sidebar.radio(
+        "View",
+        options=["Overview", "nr20 Valuations", "nr20 vs nr13", "Tables & Artifacts"],
+    )
+
+    st.title("Historical LSMC B1: Actual Prices vs Forward Benchmarks")
+    st.markdown(
+        "**Notebook 20 bridge:** perfect-foresight LP on actual 2024-26 GB DA, "
+        "system price, and WD60 proxy paths. Values are converted to GBPm/year "
+        "for the 100 MW asset so they can be compared with notebook 13."
+    )
+
+    img_b1_summary = optional_image("historical_lsmc_b1_summary.png")
+    img_b1_direct = optional_image("historical_lsmc_b1_vs_nb13.png")
+    img_b1_stacked = optional_image("historical_lsmc_b1_nr13_stacked.png")
+
+    if page == "Overview":
+        st.header("What changed")
+        st.info(
+            "nr20 is now a self-contained notebook with visible inputs. It writes "
+            "historical B1 values, unit-converted GBPm/year values, a direct DA "
+            "perfect-foresight comparison to nr13, and a duration-sorted stacked "
+            "1h/2h nr20 + nr13 table."
+        )
+
+        if df_b1_summary.empty:
+            st.warning("No nr20 summary data found. Run notebooks/20_historical_lsmc.ipynb.")
+        else:
+            col1, col2, col3, col4 = st.columns(4)
+            with col1:
+                st.metric("Historical window", "2024-04 to 2026-04")
+            with col2:
+                st.metric("Aligned HH rows", f"{int(df_b1_summary['rows'].max()):,}")
+            with col3:
+                st.metric("nr20 streams", df_b1_summary["stream"].nunique())
+            with col4:
+                st.metric("Durations", df_b1_summary["duration_h"].nunique())
+
+            st.divider()
+            st.subheader("Converted nr20 values")
+            pivot = df_b1_summary.pivot_table(
+                index="stream",
+                columns="duration_h",
+                values="value_gbp_annualized_m",
+                aggfunc="first",
+            )
+            pivot.columns = [f"{c:g}h GBPm/year" for c in pivot.columns]
+            st.dataframe(pivot.round(2), use_container_width=True)
+
+        st.divider()
+        st.subheader("Interpretation")
+        st.markdown(
+            "- **nr20 DA** is the direct historical counterpart to **nr13 Perfect foresight (DA energy)**.\n"
+            "- **nr20 SP** is a clairvoyant upper bound on actual system-price volatility.\n"
+            "- **nr20 WD60** is the closest historical context for the nr13 MODO-style WD row, "
+            "but it is still perfect-foresight rather than rolling/tradable."
+        )
+
+    elif page == "nr20 Valuations":
+        st.header("nr20 historical perfect-foresight values")
+
+        if img_b1_summary:
+            st.image(img_b1_summary, use_container_width=True)
+
+        if df_b1_summary.empty:
+            st.warning("No nr20 summary data available.")
+        else:
+            fig = go.Figure()
+            for stream in ["DA", "SP_perfect_foresight", "WD60_perfect_foresight"]:
+                sub = df_b1_summary[df_b1_summary["stream"].eq(stream)].sort_values("duration_h")
+                if not sub.empty:
+                    fig.add_trace(go.Bar(
+                        x=[f"{d:g}h" for d in sub["duration_h"]],
+                        y=sub["value_gbp_annualized_m"],
+                        name=stream,
+                        hovertemplate="%{x}: GBP %{y:.2f}m/year<extra></extra>",
+                    ))
+            fig.update_layout(
+                barmode="group",
+                title="nr20 historical B1 values",
+                xaxis_title="Battery duration",
+                yaxis_title="GBPm/year for 100 MW",
+                height=480,
+            )
+            st.plotly_chart(fig, use_container_width=True)
+
+            show = df_b1_summary[[
+                "duration_h",
+                "stream",
+                "gbp_per_mw_year_k",
+                "value_gbp_annualized_m",
+                "cycles_equiv",
+                "price_mean_gbp_mwh",
+                "price_min_gbp_mwh",
+                "price_max_gbp_mwh",
+            ]].copy()
+            show.columns = [
+                "Duration",
+                "Stream",
+                "GBPk/MW/year",
+                "GBPm/year",
+                "Equivalent cycles",
+                "Mean price",
+                "Min price",
+                "Max price",
+            ]
+            st.dataframe(show.round(2), use_container_width=True, hide_index=True)
+
+    elif page == "nr20 vs nr13":
+        st.header("nr20 vs nr13 comparison")
+
+        if img_b1_direct:
+            st.image(img_b1_direct, use_container_width=True)
+
+        if df_b1_direct.empty:
+            st.warning("No direct comparison data available.")
+        else:
+            direct = df_b1_direct[df_b1_direct["comparison_type"].eq("direct_DA_perfect_foresight")]
+            if not direct.empty:
+                st.subheader("Direct like-for-like: DA perfect foresight")
+                display = direct[[
+                    "duration_h",
+                    "b1_value_gbp_annualized_m",
+                    "nb13_value_gbp_annualized_m",
+                    "diff_gbp_annualized_m",
+                    "diff_pct_vs_nb13",
+                ]].copy()
+                display.columns = [
+                    "Duration",
+                    "nr20 actual DA PF (GBPm/year)",
+                    "nr13 simulated DA PF (GBPm/year)",
+                    "Difference (GBPm/year)",
+                    "Difference vs nr13 (%)",
+                ]
+                st.dataframe(display.round(2), use_container_width=True, hide_index=True)
+
+            st.divider()
+            st.subheader("Context comparisons")
+            context = df_b1_direct[
+                df_b1_direct["comparison_type"].eq("context_not_strictly_like_for_like")
+            ].copy()
+            if not context.empty:
+                st.dataframe(
+                    context[[
+                        "duration_h",
+                        "stream",
+                        "nb13_method",
+                        "b1_value_gbp_annualized_m",
+                        "nb13_value_gbp_annualized_m",
+                        "diff_pct_vs_nb13",
+                    ]].round(2),
+                    use_container_width=True,
+                    hide_index=True,
+                )
+
+        st.divider()
+        st.subheader("Stacked 1h/2h nr20 + nr13 table")
+        if img_b1_stacked:
+            st.image(img_b1_stacked, use_container_width=True)
+
+        if not df_b1_stacked.empty:
+            st.dataframe(
+                df_b1_stacked[[
+                    "duration_h",
+                    "source",
+                    "valuation",
+                    "value_gbp_annualized_m",
+                    "strict_like_for_like_to",
+                    "key_difference",
+                ]].round(2),
+                use_container_width=True,
+                height=520,
+                hide_index=True,
+            )
+
+    elif page == "Tables & Artifacts":
+        st.header("nr20 artifacts")
+
+        artifacts = [
+            "historical_lsmc_b1_summary.csv",
+            "historical_lsmc_b1_summary.json",
+            "historical_lsmc_b1_summary.png",
+            "historical_lsmc_b1_vs_nb13.csv",
+            "historical_lsmc_b1_vs_nb13.png",
+            "historical_lsmc_b1_nr13_stacked_table.csv",
+            "historical_lsmc_b1_nr13_stacked_wide.csv",
+            "historical_lsmc_b1_nr13_stacked.png",
+        ]
+        for fname in artifacts:
+            p = PROCESSED / fname
+            exists = p.exists()
+            size = f"{p.stat().st_size / 1024:.1f} KB" if exists else ""
+            st.text(f"{'ok' if exists else 'missing'}  {fname}  {size}")
+
+        st.divider()
+        if not df_b1_wide.empty:
+            st.subheader("Wide comparison table")
+            st.dataframe(df_b1_wide.round(2), use_container_width=True, hide_index=True)
+            st.download_button(
+                "Download wide nr20/nr13 table",
+                df_b1_wide.to_csv(index=False),
+                "historical_lsmc_b1_nr13_stacked_wide.csv",
+                "text/csv",
+            )
+        if not df_b1_stacked.empty:
+            st.download_button(
+                "Download long nr20/nr13 table",
+                df_b1_stacked.to_csv(index=False),
+                "historical_lsmc_b1_nr13_stacked_table.csv",
+                "text/csv",
+            )
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# SECTION 4: Forward vs Realized
 # ═══════════════════════════════════════════════════════════════════════════════
 elif section == "Forward vs Realized":
 
@@ -681,6 +937,8 @@ elif section == "Forward vs Realized":
         row = df_comparison[
             (df_comparison["method"] == method) & (df_comparison["duration_h"] == dur)
         ]
+        if col not in row.columns and col == "gbp_per_mw_year_k":
+            col = "gbp_per_mw_year"
         return float(row[col].iloc[0]) if not row.empty else 0.0
 
     def _nb13_attr(key: str, dur: float) -> float:

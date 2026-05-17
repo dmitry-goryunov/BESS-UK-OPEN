@@ -1,282 +1,170 @@
 [
   {
-    "key":"hpfc",
-    "component":"HPFC anchor",
-    "duration_h":1.0,
-    "mean_m":0.141958689,
-    "std_m":0.0330401058,
-    "p25_m":0.1192515629,
-    "p75_m":0.1670367763,
-    "pct_of_gross":10.1453222566
+    "key": "da",
+    "component": "da",
+    "duration_h": 1.0,
+    "mean_m": -0.2643483940670017,
+    "std_m": 0.043454797114530715
   },
   {
-    "key":"da_surp",
-    "component":"DA surprise",
-    "duration_h":1.0,
-    "mean_m":0.0365653745,
-    "std_m":0.0378471548,
-    "p25_m":0.0105225096,
-    "p75_m":0.0524042362,
-    "pct_of_gross":2.6132074774
+    "key": "imbalance",
+    "component": "imbalance",
+    "duration_h": 1.0,
+    "mean_m": 1.5308150516613093,
+    "std_m": 0.24357499591494072
   },
   {
-    "key":"imbalance",
-    "component":"Imbalance proxy (BM\/ID substitute)",
-    "duration_h":1.0,
-    "mean_m":1.5557125683,
-    "std_m":0.180428371,
-    "p25_m":1.4191612159,
-    "p75_m":1.6680245324,
-    "pct_of_gross":111.1816786766
+    "key": "dc",
+    "component": "dc",
+    "duration_h": 1.0,
+    "mean_m": 0.0,
+    "std_m": 0.0
   },
   {
-    "key":"dc",
-    "component":"DC ancillary",
-    "duration_h":1.0,
-    "mean_m":0.0,
-    "std_m":0.0,
-    "p25_m":0.0,
-    "p75_m":0.0,
-    "pct_of_gross":0.0
+    "key": "qr",
+    "component": "qr",
+    "duration_h": 1.0,
+    "mean_m": 0.6881273571912625,
+    "std_m": 0.08894418101440973
   },
   {
-    "key":"qr",
-    "component":"QR ancillary",
-    "duration_h":1.0,
-    "mean_m":0.5068781148,
-    "std_m":0.0257246236,
-    "p25_m":0.4906447395,
-    "p75_m":0.525464225,
-    "pct_of_gross":36.2249176563
+    "key": "bm",
+    "component": "bm",
+    "duration_h": 1.0,
+    "mean_m": 0.12683048170460026,
+    "std_m": 0.046601575161457846
   },
   {
-    "key":"bm",
-    "component":"Balancing Mechanism",
-    "duration_h":1.0,
-    "mean_m":0.1729716412,
-    "std_m":0.0219122825,
-    "p25_m":0.1590870184,
-    "p75_m":0.1864270395,
-    "pct_of_gross":12.3617163137
+    "key": "costs",
+    "component": "costs",
+    "duration_h": 1.0,
+    "mean_m": -0.4180304617799631,
+    "std_m": 0.0678764303353901
   },
   {
-    "key":"costs",
-    "component":"Costs (deg+VOM)",
-    "duration_h":1.0,
-    "mean_m":-0.5074168765,
-    "std_m":0.0282847187,
-    "p25_m":-0.5284185821,
-    "p75_m":-0.484829332,
-    "pct_of_gross":-36.2634211903
+    "key": "da",
+    "component": "da",
+    "duration_h": 2.0,
+    "mean_m": -0.2506878528489329,
+    "std_m": 0.04628619358585975
   },
   {
-    "key":"hpfc",
-    "component":"HPFC anchor",
-    "duration_h":2.0,
-    "mean_m":0.5499067821,
-    "std_m":0.0341183604,
-    "p25_m":0.5263427488,
-    "p75_m":0.5716686065,
-    "pct_of_gross":16.2373398305
+    "key": "imbalance",
+    "component": "imbalance",
+    "duration_h": 2.0,
+    "mean_m": 1.8020204060222393,
+    "std_m": 0.32119945217668605
   },
   {
-    "key":"da_surp",
-    "component":"DA surprise",
-    "duration_h":2.0,
-    "mean_m":0.0717285512,
-    "std_m":0.0744877255,
-    "p25_m":0.0226161815,
-    "p75_m":0.0924320625,
-    "pct_of_gross":2.1179605336
+    "key": "dc",
+    "component": "dc",
+    "duration_h": 2.0,
+    "mean_m": 1.7247657797220879,
+    "std_m": 0.2711153519344655
   },
   {
-    "key":"imbalance",
-    "component":"Imbalance proxy (BM\/ID substitute)",
-    "duration_h":2.0,
-    "mean_m":2.0018855305,
-    "std_m":0.2395624561,
-    "p25_m":1.8369719521,
-    "p75_m":2.1517060284,
-    "pct_of_gross":59.11055604
+    "key": "qr",
+    "component": "qr",
+    "duration_h": 2.0,
+    "mean_m": 0.3565853789678551,
+    "std_m": 0.09590003081390078
   },
   {
-    "key":"dc",
-    "component":"DC ancillary",
-    "duration_h":2.0,
-    "mean_m":1.4711824795,
-    "std_m":0.0661875189,
-    "p25_m":1.4338887239,
-    "p75_m":1.5201511247,
-    "pct_of_gross":43.4402532398
+    "key": "bm",
+    "component": "bm",
+    "duration_h": 2.0,
+    "mean_m": 0.2664671729272117,
+    "std_m": 0.07569109186341477
   },
   {
-    "key":"qr",
-    "component":"QR ancillary",
-    "duration_h":2.0,
-    "mean_m":0.4000144902,
-    "std_m":0.0395199095,
-    "p25_m":0.37274683,
-    "p75_m":0.4217653272,
-    "pct_of_gross":11.811404088
+    "key": "costs",
+    "component": "costs",
+    "duration_h": 2.0,
+    "mean_m": -0.43246525466631064,
+    "std_m": 0.0728539488396963
   },
   {
-    "key":"bm",
-    "component":"Balancing Mechanism",
-    "duration_h":2.0,
-    "mean_m":0.2107145736,
-    "std_m":0.0207113786,
-    "p25_m":0.197225443,
-    "p75_m":0.2231884493,
-    "pct_of_gross":6.2218620498
+    "key": "da",
+    "component": "da",
+    "duration_h": 3.0,
+    "mean_m": -0.19156380011295493,
+    "std_m": 0.04260961572187642
   },
   {
-    "key":"costs",
-    "component":"Costs (deg+VOM)",
-    "duration_h":2.0,
-    "mean_m":-0.6593760757,
-    "std_m":0.0352248747,
-    "p25_m":-0.681499105,
-    "p75_m":-0.6349227487,
-    "pct_of_gross":-19.4696878909
+    "key": "imbalance",
+    "component": "imbalance",
+    "duration_h": 3.0,
+    "mean_m": 1.741518231355378,
+    "std_m": 0.34342015052763203
   },
   {
-    "key":"hpfc",
-    "component":"HPFC anchor",
-    "duration_h":3.0,
-    "mean_m":1.1236374153,
-    "std_m":0.0418671688,
-    "p25_m":1.0973975362,
-    "p75_m":1.1477040023,
-    "pct_of_gross":25.2735606899
+    "key": "dc",
+    "component": "dc",
+    "duration_h": 3.0,
+    "mean_m": 1.7229288594021093,
+    "std_m": 0.2762249412038107
   },
   {
-    "key":"da_surp",
-    "component":"DA surprise",
-    "duration_h":3.0,
-    "mean_m":0.125948652,
-    "std_m":0.1325277112,
-    "p25_m":0.037608214,
-    "p75_m":0.1601780173,
-    "pct_of_gross":2.8329164356
+    "key": "qr",
+    "component": "qr",
+    "duration_h": 3.0,
+    "mean_m": 0.3685906637930404,
+    "std_m": 0.1031136101210826
   },
   {
-    "key":"imbalance",
-    "component":"Imbalance proxy (BM\/ID substitute)",
-    "duration_h":3.0,
-    "mean_m":2.2644091252,
-    "std_m":0.2599240286,
-    "p25_m":2.1010833902,
-    "p75_m":2.4241307286,
-    "pct_of_gross":50.932516731
+    "key": "bm",
+    "component": "bm",
+    "duration_h": 3.0,
+    "mean_m": 1.0382420351779946,
+    "std_m": 0.11096418412715943
   },
   {
-    "key":"dc",
-    "component":"DC ancillary",
-    "duration_h":3.0,
-    "mean_m":1.509906831,
-    "std_m":0.0489346188,
-    "p25_m":1.4763811194,
-    "p75_m":1.5410281352,
-    "pct_of_gross":33.9617757572
+    "key": "costs",
+    "component": "costs",
+    "duration_h": 3.0,
+    "mean_m": -0.38599027095213867,
+    "std_m": 0.07072535124681845
   },
   {
-    "key":"qr",
-    "component":"QR ancillary",
-    "duration_h":3.0,
-    "mean_m":0.5570583113,
-    "std_m":0.0338864834,
-    "p25_m":0.5307943923,
-    "p75_m":0.5778270611,
-    "pct_of_gross":12.5297065122
+    "key": "da",
+    "component": "da",
+    "duration_h": 4.0,
+    "mean_m": -0.1715907889475621,
+    "std_m": 0.0443204175926367
   },
   {
-    "key":"bm",
-    "component":"Balancing Mechanism",
-    "duration_h":3.0,
-    "mean_m":0.5697380656,
-    "std_m":0.0371854796,
-    "p25_m":0.5468971125,
-    "p75_m":0.5910284912,
-    "pct_of_gross":12.8149075326
+    "key": "imbalance",
+    "component": "imbalance",
+    "duration_h": 4.0,
+    "mean_m": 1.7738546794253862,
+    "std_m": 0.34778926380530745
   },
   {
-    "key":"costs",
-    "component":"Costs (deg+VOM)",
-    "duration_h":3.0,
-    "mean_m":-0.852398843,
-    "std_m":0.0382615061,
-    "p25_m":-0.8764310081,
-    "p75_m":-0.8255310589,
-    "pct_of_gross":-19.1726918293
+    "key": "dc",
+    "component": "dc",
+    "duration_h": 4.0,
+    "mean_m": 1.712068047667474,
+    "std_m": 0.27674337367062857
   },
   {
-    "key":"hpfc",
-    "component":"HPFC anchor",
-    "duration_h":4.0,
-    "mean_m":1.5585007415,
-    "std_m":0.0421959224,
-    "p25_m":1.5339776824,
-    "p75_m":1.583426694,
-    "pct_of_gross":32.9059835796
+    "key": "qr",
+    "component": "qr",
+    "duration_h": 4.0,
+    "mean_m": 0.3745463443359676,
+    "std_m": 0.10505074660822294
   },
   {
-    "key":"da_surp",
-    "component":"DA surprise",
-    "duration_h":4.0,
-    "mean_m":0.1542484737,
-    "std_m":0.1618948246,
-    "p25_m":0.0452139468,
-    "p75_m":0.200070944,
-    "pct_of_gross":3.2567823737
+    "key": "bm",
+    "component": "bm",
+    "duration_h": 4.0,
+    "mean_m": 1.0390023320052408,
+    "std_m": 0.11075440699737511
   },
   {
-    "key":"imbalance",
-    "component":"Imbalance proxy (BM\/ID substitute)",
-    "duration_h":4.0,
-    "mean_m":2.4509380905,
-    "std_m":0.2753870497,
-    "p25_m":2.2978154287,
-    "p75_m":2.6116214121,
-    "pct_of_gross":51.7487906269
-  },
-  {
-    "key":"dc",
-    "component":"DC ancillary",
-    "duration_h":4.0,
-    "mean_m":1.4322131292,
-    "std_m":0.0448102838,
-    "p25_m":1.4060003452,
-    "p75_m":1.4616886887,
-    "pct_of_gross":30.2395632278
-  },
-  {
-    "key":"qr",
-    "component":"QR ancillary",
-    "duration_h":4.0,
-    "mean_m":0.5730950051,
-    "std_m":0.0346722533,
-    "p25_m":0.5493018253,
-    "p75_m":0.5900961487,
-    "pct_of_gross":12.1002539973
-  },
-  {
-    "key":"bm",
-    "component":"Balancing Mechanism",
-    "duration_h":4.0,
-    "mean_m":0.6080278385,
-    "std_m":0.0361161922,
-    "p25_m":0.5817659812,
-    "p75_m":0.628894378,
-    "pct_of_gross":12.8378213356
-  },
-  {
-    "key":"costs",
-    "component":"Costs (deg+VOM)",
-    "duration_h":4.0,
-    "mean_m":-1.0204001715,
-    "std_m":0.036395746,
-    "p25_m":-1.0424808652,
-    "p75_m":-0.9987861177,
-    "pct_of_gross":-21.5445975704
+    "key": "costs",
+    "component": "costs",
+    "duration_h": 4.0,
+    "mean_m": -0.39603503807378054,
+    "std_m": 0.0734480099769
   }
 ]

@@ -1,0 +1,50 @@
+[
+  {
+    "duration_h": 1.0,
+    "base_method": "Forward simulation (LSMC)",
+    "overlay_method": "Forward simulation (LSMC + CM overlay)",
+    "base_gbp_per_mw_year_k": 16.633940341660896,
+    "cm_gbp_per_mw_year_k": 6.0,
+    "total_gbp_per_mw_year_k": 22.633940341660896,
+    "base_value_gbp_annualized_m": 1.6633940341660896,
+    "cm_value_gbp_annualized_m": 0.6,
+    "total_value_gbp_annualized_m": 2.2633940341660894,
+    "note": "Deterministic CM overlay; replace 6.0k/MW/yr with CM register-derived value when available."
+  },
+  {
+    "duration_h": 2.0,
+    "base_method": "Forward simulation (LSMC)",
+    "overlay_method": "Forward simulation (LSMC + CM overlay)",
+    "base_gbp_per_mw_year_k": 34.666856280598935,
+    "cm_gbp_per_mw_year_k": 6.0,
+    "total_gbp_per_mw_year_k": 40.666856280598935,
+    "base_value_gbp_annualized_m": 3.4666856280598934,
+    "cm_value_gbp_annualized_m": 0.6,
+    "total_value_gbp_annualized_m": 4.0666856280598935,
+    "note": "Deterministic CM overlay; replace 6.0k/MW/yr with CM register-derived value when available."
+  },
+  {
+    "duration_h": 3.0,
+    "base_method": "Forward simulation (LSMC)",
+    "overlay_method": "Forward simulation (LSMC + CM overlay)",
+    "base_gbp_per_mw_year_k": 42.937257200742025,
+    "cm_gbp_per_mw_year_k": 6.0,
+    "total_gbp_per_mw_year_k": 48.937257200742025,
+    "base_value_gbp_annualized_m": 4.293725720074202,
+    "cm_value_gbp_annualized_m": 0.6,
+    "total_value_gbp_annualized_m": 4.893725720074202,
+    "note": "Deterministic CM overlay; replace 6.0k/MW/yr with CM register-derived value when available."
+  },
+  {
+    "duration_h": 4.0,
+    "base_method": "Forward simulation (LSMC)",
+    "overlay_method": "Forward simulation (LSMC + CM overlay)",
+    "base_gbp_per_mw_year_k": 43.31845577700007,
+    "cm_gbp_per_mw_year_k": 6.0,
+    "total_gbp_per_mw_year_k": 49.31845577700007,
+    "base_value_gbp_annualized_m": 4.3318455777000064,
+    "cm_value_gbp_annualized_m": 0.6,
+    "total_value_gbp_annualized_m": 4.931845577700006,
+    "note": "Deterministic CM overlay; replace 6.0k/MW/yr with CM register-derived value when available."
+  }
+]

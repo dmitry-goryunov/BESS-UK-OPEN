@@ -1,95 +1,112 @@
-# BESS UK Valuation Framework
+﻿# BESS UK â€” Stochastic Valuation
 
-Stochastic mark-to-market valuation for fast-cycle battery energy storage in Great Britain (1–4 hours).
+Live app: https://bess-uk-open-aw2qfunhxjrab9mr8bmhsh.streamlit.app/
 
-This repository contains:
-1. **Streamlit dashboard** — Comprehensive BESS valuation outputs (all phases)
-2. **Phase 4 Streamlit app** — Interactive duration sweep analysis (method comparison & attribution)
-3. **Processed output files** — All valuation results, charts, and diagnostics
-4. **Documentation** — Methodology, assumptions, and usage guides
+A stochastic mark-to-market valuation framework for a 100 MW GB fast-cycle Battery
+Energy Storage System, valued across 1h / 2h / 3h / 4h durations using LSMC
+(Longstaff-Schwartz Monte Carlo) co-optimisation, calibrated against the Modo
+Energy public GB BESS index.
 
-The research notebooks and modelling source code remain local; they are not needed to view the dashboards.
+## What this project does
 
-## 📊 Dashboards
+Four things, exposed via the Streamlit app:
 
-### 1. Main BESS Dashboard (`streamlit_app.py`)
+1. **Forward stochastic valuation (LSMC)** â€” Non-anticipative policy co-optimising
+   DA energy, imbalance basis, DC, QR, and BM under a Schwartz-Smith two-factor
+   price process with OU+jump imbalance and AR(1) ancillary clearing.
+2. **Historical backtest (nb19)** â€” Realised-price rolling LP + fixed-headroom
+   ancillary + fleet-average BM, validated against the Modo public index.
+3. **Historical LSMC B1 (nb20)** â€” actual 2024â€“26 DA / SP / WD60
+   perfect-foresight LP, converted to GBPm/year and stacked against nr13 1h/2h
+   forward benchmarks.
+4. **Forward vs realised comparison** â€” three-way view of nb13 forward (WD rolling,
+   LSMC) against nb19 realised.
 
-Comprehensive outputs from all phases (1–7):
+## Headline numbers
 
-| Tab | Contents |
-|---|---|
-| **Overview** | Headline LSMC, MTM, risk, backtest, perfect-foresight |
-| **Calibration** | Schwartz-Smith, PCA, imbalance, ancillary parameters |
-| **Simulation** | Sample paths, cross-correlation, diagnostic charts |
-| **LSMC** | Duration-specific valuation results and charts |
-| **MTM Risk** | Greeks (delta, vega, rho), VaR, CVaR, stress tests, SoH |
-| **Backtest** | P&L attribution, dual bounds, execution analysis |
-| **Perfect Foresight** | Upper-bound benchmarks, dispatch dispatch analysis |
-| **Files** | Inventory and raw JSON viewer |
+### Historical backtest vs Modo (Apr 2024 â€“ Apr 2026, gross basis)
 
-### 2. Phase 4 Duration Sweep App (`streamlit_phase4_sweep.py`) ⭐
+| Stream | 1H | 2H |
+|---|---|---|
+| DA | Â£2.1k | Â£11.3k |
+| WD (SPâˆ’DA, cap Â£60) | Â£32.4k | Â£40.4k |
+| Ancillary (DC/DM/DR/QR) | Â£11.2k | Â£11.2k |
+| BM fleet avg | Â£7.2k | Â£7.9k |
+| **Model total** | **Â£52.9k** | **Â£70.8k** |
+| Modo index | Â£50.8k | Â£71.9k |
+| Gap | âˆ’Â£2.0k âœ“ | +Â£1.1k âœ“ |
 
-Interactive **method comparison & revenue attribution** across 1h–4h durations:
+Backtest base case is locked: DC headroom 35%, WD cap Â£60/MWh, costs excluded
+for like-for-like vs Modo. See `CLAUDE.md` for full asset config.
 
-| View | Purpose |
-|---|---|
-| **Overview** | Key metrics and findings |
-| **Method Comparison** | Line/bar charts of 5 valuation methods by duration |
-| **Attribution Analysis** | Revenue breakdown by component (HPFC, DA, ancillary, costs) |
-| **Detailed Tables** | Full data tables (downloadable CSV) |
-| **Run Diagnostics** | Execution logs, file inventory, regeneration instructions |
+### Forward LSMC (2026-05-17 LSMC_CLEANUP sweep, B1 fixed, no-stacking, reserve_sustain_h=1.0)
 
-**See:** [STREAMLIT_PHASE4_APP.md](docs/STREAMLIT_PHASE4_APP.md) for full documentation.
+| Duration | LSMC Â£k/MW/yr | Top action |
+|---|---|---|
+| 1h | 16.6 | QR=0.25 (66.5%) â€” DC=0 by physical infeasibility |
+| 2h | 34.7 | DC=0.50 (60.7%) |
+| 3h | 42.9 | DC=0.50, BM=0.25 (61.3%) |
+| 4h | 43.3 | DC=0.50, BM=0.25 (60.5%) |
 
-## 🚀 Run Dashboards Locally
+**2h/1h = 2.08Ã—** â€” clears Modo 1.52Ã— gate. All validation checks PASSED
+(continuation clipping 0% across all durations, no stacked dominant mode).
 
-### Main Dashboard
+The forward LSMC sits below the Modo all-in level because the sweep used raw
+unanchored bundle prices (no HPFC anchor in this run). Capacity Market
+(~Â£6k/MW/yr) is now added as a deterministic overlay. Remaining gap to
+Modo (Â£47.7k / Â£72.5k): HPFC anchoring ~Â£10â€“15k + BM / historical-basis refinement.
+See `CLAUDE.md` for current status.
+
+## Run locally
+
 ```bash
 pip install -r requirements.txt
-streamlit run streamlit_app.py
+# Windows: use Python 3.12 explicitly for Streamlit / BM fetch
+python -m streamlit run streamlit_phase4_sweep.py
 ```
 
-### Phase 4 Duration Sweep
-```bash
-streamlit run streamlit_phase4_sweep.py
-```
+## Repository layout
 
-Both will open at `http://localhost:8501` by default.
+| Area | Where |
+|---|---|
+| LSMC core, dispatch, processes | `src/optimisation/`, `src/processes/` |
+| Backtest engine | `src/backtest/` |
+| Data fetchers (Elexon, NESO) | `src/data/` |
+| Notebooks (data fetch â†’ calibration â†’ LSMC â†’ backtest) | `notebooks/` |
+| Streamlit dashboard | `streamlit_phase4_sweep.py` |
+| Reference docs | `CLAUDE.md` (master), `docs/`, `CHANGELOG.md` |
 
-## 📦 Repository Contents
+## Methodology in one screen
 
-### Streamlit Apps
-- `streamlit_app.py` — Main BESS valuation dashboard
-- `streamlit_phase4_sweep.py` — Phase 4 duration sweep analysis ⭐ **New!**
+- **DA baseload:** Schwartz-Smith two-factor, HPFC-anchored
+- **Intraday shape:** HPFC Ã— SS relative move (hourly multipliers 0.71â€“1.46)
+- **Imbalance basis (SPâˆ’DA):** OU + asymmetric jumps; post-calibration p_pos = 0.358,
+  implied stationary mean â‰ˆ âˆ’Â£0.41/MWh. Signal lag: dispatch uses delta[tâˆ’1] to
+  avoid clairvoyant settlement.
+- **DC / QR clearing:** AR(1) per EFA block with saturation curve
+- **BM:** Mode-grid `bm_levels = [0.0, 0.25, 0.5]` with offer price Ï€_bm â‰ˆ Â£79.9/MWh,
+  activation probability 0.12
+- **Co-optimisation:** |net| + r_dc + r_qr + r_bm â‰¤ P_bar, with energy headroom
+  `r Ã— sustain_h / Î·_d â‰¤ E âˆ’ E_min` (sustain_h = 1.0h central, no DC+QR stacking)
 
-### Documentation
-- `README.md` — This file
-- `docs/STREAMLIT_PHASE4_APP.md` — Phase 4 app guide
-- `docs/stochastic_plan.md` — Full methodology
-- `docs/pricing_items.md` — Priceable revenue components
-- `docs/revenue_stack.md` — GB market assumptions
-- `CLAUDE.md` — Project context (for AI assistants)
+## Data files in `data/`
 
-### Data
-- `data/processed/` — All output files, charts, JSON summaries
-- `requirements.txt` — Python dependencies
+| File | Description |
+|---|---|
+| `data/processed/phase4_all_durations_comparison.csv` | LSMC method comparison Ã— duration (refreshed by `run_lsmc_sweep.py` 2026-05-17) |
+| `data/processed/capacity_market_overlay.csv` | Deterministic CM overlay audit rows (GBP6k/MW/yr central) |
+| `data/processed/phase4_all_durations_attribution.csv` | Per-stream LSMC attribution Ã— duration |
+| `data/processed/historical_lsmc_b1_summary.csv` | nb20 historical B1 values on actual DA / SP / WD60 prices |
+| `data/processed/historical_lsmc_b1_vs_nb13.csv` | Direct nr20 DA perfect-foresight vs nr13 DA perfect-foresight comparison |
+| `data/processed/historical_lsmc_b1_nr13_stacked_table.csv` | 1h/2h stacked nr20 + nr13 comparison table, sorted by duration |
+| `data/processed/historical_index_with_bm.png` | nb19 realised index vs Modo |
+| `MODO 1H.csv` / `MODO 2H.csv` | Modo public index (source of truth for benchmarking) |
 
-## 📝 Notes
+## Status notes
 
-These outputs are research artifacts from stochastic valuation of a 50 MW / 100 MWh (2h nominal) fast-cycle BESS asset.
+The forward LSMC numbers above are from the 2026-05-17 LSMC_CLEANUP sweep
+(`run_lsmc_sweep.py`). The imbalance calibration was corrected in May 2026
+(see `CHANGELOG.md`); any earlier write-up citing 1h LSMC â‰ˆ Â£75.9k/MW/yr or
+imbalance attribution â‰ˆ Â£7â€“9m/yr predates that fix and should not be cited.
 
-**Phases 1–3:** Data pipeline, calibration, simulation  
-**Phase 4:** Duration sweep – method comparison for 1h, 2h, 3h, 4h duration batteries  
-**Phases 5–7:** MTM risk (Greeks, VaR, CVaR), backtest attribution, perfect-foresight benchmark
-
-### Phase 4 Highlights
-- Compares 5 valuation methods: intrinsic, rolling, LSMC, perfect foresight
-- Duration sweep: 1h, 2h, 3h, 4h batteries
-- Revenue attribution: HPFC anchor, DA surprise, intraday, DC/QR ancillary, costs
-- **App:** `streamlit_phase4_sweep.py` — Interactive dashboard with filtering, drill-down, CSV export
-
-### Important Caveats
-- Perfect-foresight is an **upper-bound benchmark**, not a tradable strategy
-- Optimiser fee: assumed 12% of gross positive merchant revenue
-- SoH augmentation: modelled at years 4, 8, 12 of asset life
-- All outputs research/illustrative; not for investment decisions
+Public repo: https://github.com/dmitry-goryunov/BESS-UK-OPEN
